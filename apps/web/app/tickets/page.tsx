@@ -1,37 +1,74 @@
-import { Badge, Button, Card, DataTable, Field, PageHeader, Select, TextInput } from "@agentdesk/ui";
+import type { Prisma } from "@prisma/client";
+import { Badge, Button, Card, DataTable, EmptyState, Field, PageHeader, PaginationControls, Select, SortableTh, TextInput } from "@agentdesk/ui";
 import { prisma } from "@agentdesk/db";
 import { labelMaps, TICKET_PRIORITIES, TICKET_STATUSES } from "@agentdesk/shared";
 import { slaTone, formatDateTime, priorityTone, ticketStatusTone } from "../../lib/format";
 import { requireCurrentUser } from "../../lib/auth";
+import {
+  DEFAULT_TICKET_SORT,
+  TICKET_SORT_KEYS,
+  pageHref,
+  parsePagination,
+  parseSort,
+  sortHref,
+  sortIndicator,
+  totalPages,
+  type TicketSortKey
+} from "../../lib/pagination";
 
 export const dynamic = "force-dynamic";
 
-export default async function TicketsPage({
-  searchParams
-}: {
-  searchParams: { status?: string; priority?: string; q?: string };
-}) {
+type TicketsSearchParams = {
+  status?: string;
+  priority?: string;
+  q?: string;
+  page?: string;
+  pageSize?: string;
+  sort?: string;
+  direction?: string;
+};
+
+export default async function TicketsPage({ searchParams }: { searchParams: TicketsSearchParams }) {
   const currentUser = await requireCurrentUser();
-  const tickets = await prisma.ticket.findMany({
-    where: {
-      organizationId: currentUser.organizationId,
-      status: searchParams.status ? (searchParams.status as never) : undefined,
-      priority: searchParams.priority ? (searchParams.priority as never) : undefined,
-      OR: searchParams.q
-        ? [
-            { title: { contains: searchParams.q, mode: "insensitive" } },
-            { customerName: { contains: searchParams.q, mode: "insensitive" } },
-            { requesterEmail: { contains: searchParams.q, mode: "insensitive" } }
-          ]
-        : undefined
-    },
-    include: {
-      assignedUser: true,
-      assignedTeam: true,
-      incident: true
-    },
-    orderBy: [{ priority: "desc" }, { updatedAt: "desc" }]
-  });
+  const pagination = parsePagination(searchParams);
+  const sort = parseSort<TicketSortKey>(searchParams.sort, searchParams.direction, TICKET_SORT_KEYS, DEFAULT_TICKET_SORT);
+
+  const where: Prisma.TicketWhereInput = {
+    organizationId: currentUser.organizationId,
+    status: searchParams.status ? (searchParams.status as never) : undefined,
+    priority: searchParams.priority ? (searchParams.priority as never) : undefined,
+    OR: searchParams.q
+      ? [
+          { title: { contains: searchParams.q, mode: "insensitive" } },
+          { customerName: { contains: searchParams.q, mode: "insensitive" } },
+          { requesterEmail: { contains: searchParams.q, mode: "insensitive" } }
+        ]
+      : undefined
+  };
+
+  // `sort.key` came from parseSort, so it is one of TICKET_SORT_KEYS and
+  // never arbitrary user input. Prisma cannot infer that from a computed
+  // key, hence the assertion.
+  //
+  // Sorting by an enum column (priority, status) orders by the order the
+  // values are declared in schema.prisma, not alphabetically. For priority
+  // that is LOW → CRITICAL, so "desc" puts CRITICAL first, which is what a
+  // triage queue wants.
+  const orderBy = { [sort.key]: sort.direction } as Prisma.TicketOrderByWithRelationInput;
+
+  const [tickets, totalTickets] = await Promise.all([
+    prisma.ticket.findMany({
+      where,
+      include: { assignedUser: true, assignedTeam: true, incident: true },
+      orderBy,
+      skip: pagination.skip,
+      take: pagination.take
+    }),
+    prisma.ticket.count({ where })
+  ]);
+
+  const pages = totalPages(totalTickets, pagination.pageSize);
+  const columnHref = (key: TicketSortKey) => sortHref("/tickets", searchParams, sort, key);
 
   return (
     <>
@@ -68,51 +105,70 @@ export default async function TicketsPage({
               ))}
             </Select>
           </Field>
+          {/* Carry the sort through the filter form. Without these, applying a
+              filter would silently reset the ordering the user chose. */}
+          <input type="hidden" name="sort" value={sort.key} />
+          <input type="hidden" name="direction" value={sort.direction} />
           <Button type="submit">Apply</Button>
         </form>
 
-        <DataTable>
-          <thead>
-            <tr>
-              <th>Ticket</th>
-              <th>Status</th>
-              <th>Priority</th>
-              <th>SLA</th>
-              <th>Owner</th>
-              <th>Incident</th>
-              <th>Updated</th>
-            </tr>
-          </thead>
-          <tbody>
-            {tickets.map((ticket) => {
-              const sla = slaTone({ status: ticket.status, slaDueAt: ticket.slaDueAt, resolvedAt: ticket.resolvedAt });
-              return (
-                <tr key={ticket.id}>
-                  <td>
-                    <a href={`/tickets/${ticket.id}`}>{ticket.title}</a>
-                    <div className="muted">{ticket.customerName}</div>
-                  </td>
-                  <td>
-                    <Badge tone={ticketStatusTone(ticket.status)}>{labelMaps.ticketStatus[ticket.status]}</Badge>
-                  </td>
-                  <td>
-                    <Badge tone={priorityTone(ticket.priority)}>{labelMaps.priority[ticket.priority]}</Badge>
-                  </td>
-                  <td>
-                    <Badge tone={sla.tone}>{sla.label}</Badge>
-                    <div className="muted">{formatDateTime(ticket.slaDueAt)}</div>
-                  </td>
-                  <td>
-                    {ticket.assignedUser?.name ?? "Unassigned"}
-                    <div className="muted">{ticket.assignedTeam?.name ?? "No team"}</div>
-                  </td>
-                  <td>{ticket.incident ? <a href={`/incidents/${ticket.incident.id}`}>{ticket.incident.title}</a> : <span className="muted">None</span>}</td>
-                  <td>{formatDateTime(ticket.updatedAt)}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </DataTable>
+        {tickets.length === 0 ? (
+          <EmptyState title="No tickets match these filters">
+            Try clearing the search box, or widening the status and priority filters.
+          </EmptyState>
+        ) : (
+          <DataTable>
+            <thead>
+              <tr>
+                <th scope="col">Ticket</th>
+                <SortableTh href={columnHref("status")} label="Status" indicator={sortIndicator(sort, "status")} />
+                <SortableTh href={columnHref("priority")} label="Priority" indicator={sortIndicator(sort, "priority")} />
+                <SortableTh href={columnHref("slaDueAt")} label="SLA" indicator={sortIndicator(sort, "slaDueAt")} />
+                <th scope="col">Owner</th>
+                <th scope="col">Incident</th>
+                <SortableTh href={columnHref("updatedAt")} label="Updated" indicator={sortIndicator(sort, "updatedAt")} />
+              </tr>
+            </thead>
+            <tbody>
+              {tickets.map((ticket) => {
+                const sla = slaTone({ status: ticket.status, slaDueAt: ticket.slaDueAt, resolvedAt: ticket.resolvedAt });
+                return (
+                  <tr key={ticket.id}>
+                    <td>
+                      <a href={`/tickets/${ticket.id}`}>{ticket.title}</a>
+                      <div className="muted">{ticket.customerName}</div>
+                    </td>
+                    <td>
+                      <Badge tone={ticketStatusTone(ticket.status)}>{labelMaps.ticketStatus[ticket.status]}</Badge>
+                    </td>
+                    <td>
+                      <Badge tone={priorityTone(ticket.priority)}>{labelMaps.priority[ticket.priority]}</Badge>
+                    </td>
+                    <td>
+                      <Badge tone={sla.tone}>{sla.label}</Badge>
+                      <div className="muted">{formatDateTime(ticket.slaDueAt)}</div>
+                    </td>
+                    <td>
+                      {ticket.assignedUser?.name ?? "Unassigned"}
+                      <div className="muted">{ticket.assignedTeam?.name ?? "No team"}</div>
+                    </td>
+                    <td>{ticket.incident ? <a href={`/incidents/${ticket.incident.id}`}>{ticket.incident.title}</a> : <span className="muted">None</span>}</td>
+                    <td>{formatDateTime(ticket.updatedAt)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </DataTable>
+        )}
+
+        <PaginationControls
+          page={pagination.page}
+          totalPages={pages}
+          totalItems={totalTickets}
+          previousHref={pageHref("/tickets", searchParams, pagination.page - 1)}
+          nextHref={pageHref("/tickets", searchParams, pagination.page + 1)}
+          itemLabel="tickets"
+        />
       </Card>
     </>
   );
