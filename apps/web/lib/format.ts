@@ -1,5 +1,5 @@
 import { labelMaps, type LogLevel, type TicketPriority, type TicketStatus } from "@agentdesk/shared";
-import { getSlaState } from "@agentdesk/domain";
+import { effectiveSlaDueAt, getSlaState, isSlaPaused } from "@agentdesk/domain";
 
 export function formatDateTime(date?: Date | string | null): string {
   if (!date) return "Not set";
@@ -65,12 +65,49 @@ export function logLevelTone(level: LogLevel): "neutral" | "info" | "warning" | 
   }
 }
 
-export function slaTone(params: { status: TicketStatus; slaDueAt: Date; resolvedAt?: Date | null }) {
+export type SlaDisplay = {
+  label: string;
+  tone: "neutral" | "warning" | "danger" | "success";
+  /** True while the clock is stopped. Rendered as a separate badge so a
+   *  ticket that paused after breaching still shows both facts. */
+  paused: boolean;
+  /** The deadline once paused time is given back. Equals slaDueAt when the
+   *  ticket has never been paused. */
+  effectiveDueAt: Date;
+};
+
+export function slaTone(params: {
+  status: TicketStatus;
+  slaDueAt: Date;
+  resolvedAt?: Date | null;
+  slaPausedAt?: Date | null;
+  slaPausedTotalMs?: number;
+}): SlaDisplay {
   const state = getSlaState(params);
-  if (state === "breached") return { label: "SLA Breached", tone: "danger" as const };
-  if (state === "approaching") return { label: "SLA Approaching", tone: "warning" as const };
-  if (state === "resolved") return { label: "SLA Met", tone: "success" as const };
-  return { label: "SLA Healthy", tone: "neutral" as const };
+  const paused = isSlaPaused(params.status);
+  const effectiveDueAt = effectiveSlaDueAt(params);
+
+  const base =
+    state === "breached"
+      ? { label: "SLA Breached", tone: "danger" as const }
+      : state === "approaching"
+        ? { label: "SLA Approaching", tone: "warning" as const }
+        : state === "resolved"
+          ? { label: "SLA Met", tone: "success" as const }
+          : { label: "SLA Healthy", tone: "neutral" as const };
+
+  return { ...base, paused, effectiveDueAt };
+}
+
+/** "2h 15m" — for showing how much customer wait a ticket has accumulated. */
+export function formatDuration(ms: number): string {
+  if (ms <= 0) return "None";
+  const totalMinutes = Math.round(ms / 60000);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours === 0) return `${minutes}m`;
+  if (minutes === 0) return `${hours}h`;
+  return `${hours}h ${minutes}m`;
 }
 
 export function ticketStatusLabel(status: TicketStatus): string {
