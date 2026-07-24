@@ -65,28 +65,126 @@ export function calculateSlaDueAt(priority: TicketPriority, createdAt = new Date
   return hoursFromNow(slaHoursByPriority[priority], createdAt);
 }
 
+/* -------------------------------------------------------------------------
+ * SLA pausing
+ *
+ * A ticket parked on WAITING_ON_CUSTOMER is not work we are failing to do —
+ * it is work we cannot do. Counting that time against our SLA measures the
+ * customer's response speed and calls it our own.
+ *
+ * The implementation deliberately never moves slaDueAt. That field is the
+ * commitment made when the ticket was raised; rewriting it on every pause
+ * would lose the original promise and make "how long did this actually
+ * take" unanswerable after the fact. Instead the paused time accumulates
+ * separately and is added back when the effective deadline is computed.
+ * ---------------------------------------------------------------------- */
+
+/** Statuses during which the SLA clock does not run. */
+export const SLA_PAUSING_STATUSES: TicketStatus[] = ["WAITING_ON_CUSTOMER"];
+
+export function isSlaPaused(status: TicketStatus): boolean {
+  return SLA_PAUSING_STATUSES.includes(status);
+}
+
+export type SlaPauseFields = {
+  slaPausedAt: Date | null;
+  slaPausedTotalMs: number;
+};
+
+/**
+ * The pause bookkeeping to persist when a ticket changes status.
+ *
+ * Decided from the *target* status and the pause currently in progress,
+ * rather than from the from/to pair. That is what makes it idempotent: the
+ * transition table permits saving a ticket without changing its status, and
+ * a from/to reading would re-stamp slaPausedAt on every such save, silently
+ * discarding the pause that was already running.
+ */
+export function applySlaPauseTransition(params: {
+  from: TicketStatus;
+  to: TicketStatus;
+  slaPausedAt: Date | null;
+  slaPausedTotalMs: number;
+  now?: Date;
+}): SlaPauseFields {
+  const now = params.now ?? new Date();
+  const totalMs = params.slaPausedTotalMs;
+
+  if (isSlaPaused(params.to)) {
+    // Already paused: leave the existing start time alone.
+    return params.slaPausedAt
+      ? { slaPausedAt: params.slaPausedAt, slaPausedTotalMs: totalMs }
+      : { slaPausedAt: now, slaPausedTotalMs: totalMs };
+  }
+
+  if (params.slaPausedAt) {
+    // Leaving a pause: bank the elapsed time and clear the marker.
+    // Clamped at zero so a clock adjustment cannot subtract paused time.
+    const elapsed = Math.max(0, now.getTime() - params.slaPausedAt.getTime());
+    return { slaPausedAt: null, slaPausedTotalMs: totalMs + elapsed };
+  }
+
+  return { slaPausedAt: null, slaPausedTotalMs: totalMs };
+}
+
+/**
+ * The deadline once paused time is given back: the original commitment,
+ * plus every completed pause, plus the pause currently running.
+ *
+ * Including the in-progress pause is what actually freezes the clock. While
+ * paused, the deadline advances at exactly the same rate as `now`, so the
+ * distance between them — and therefore the SLA state — holds still.
+ */
+export function effectiveSlaDueAt(params: {
+  slaDueAt: Date;
+  slaPausedAt?: Date | null;
+  slaPausedTotalMs?: number;
+  now?: Date;
+}): Date {
+  const now = params.now ?? new Date();
+  const banked = params.slaPausedTotalMs ?? 0;
+  const inProgress = params.slaPausedAt ? Math.max(0, now.getTime() - params.slaPausedAt.getTime()) : 0;
+  return new Date(params.slaDueAt.getTime() + banked + inProgress);
+}
+
 export type SlaState = "healthy" | "approaching" | "breached" | "resolved";
 
+/**
+ * Note there is no "paused" state. A paused ticket keeps whichever state it
+ * held when the clock stopped, including "breached" — pausing protects a
+ * ticket from getting worse, it does not absolve one that was already late.
+ * The UI shows "Paused" as a separate badge so both facts stay visible.
+ */
 export function getSlaState(params: {
   status: TicketStatus;
   slaDueAt: Date;
   resolvedAt?: Date | null;
+  slaPausedAt?: Date | null;
+  slaPausedTotalMs?: number;
   now?: Date;
 }): SlaState {
   const now = params.now ?? new Date();
+  const dueAt = effectiveSlaDueAt({
+    slaDueAt: params.slaDueAt,
+    slaPausedAt: params.slaPausedAt,
+    slaPausedTotalMs: params.slaPausedTotalMs,
+    now
+  });
 
   if (params.status === "RESOLVED" || params.status === "CLOSED") {
-    return params.resolvedAt && params.resolvedAt > params.slaDueAt ? "breached" : "resolved";
+    return params.resolvedAt && params.resolvedAt > dueAt ? "breached" : "resolved";
   }
 
-  if (now > params.slaDueAt) {
+  if (now > dueAt) {
     return "breached";
   }
 
-  const remainingMs = params.slaDueAt.getTime() - now.getTime();
-  const remainingHours = remainingMs / 1000 / 60 / 60;
-  return remainingHours <= 4 ? "approaching" : "healthy";
+  const remainingHours = (dueAt.getTime() - now.getTime()) / 1000 / 60 / 60;
+  return remainingHours <= SLA_WARNING_WINDOW_HOURS ? "approaching" : "healthy";
 }
+
+/** How close to the deadline a ticket must be to count as "approaching". */
+export const SLA_WARNING_WINDOW_HOURS = 4;
 
 export function shouldEscalateTicket(params: {
   priority: TicketPriority;
