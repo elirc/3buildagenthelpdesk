@@ -256,6 +256,39 @@ textarea {
   cursor: not-allowed;
 }
 
+/* A button-shaped element that is not interactive at all — used for
+   pagination edges, where rendering a real link would let you click
+   through to a page that does not exist. */
+.button--inert {
+  opacity: 0.45;
+  cursor: default;
+  user-select: none;
+}
+
+.pagination {
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.pagination .muted {
+  margin-right: auto;
+}
+
+.sortable-th {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: inherit;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.sortable-th:hover {
+  color: var(--color-primary);
+  text-decoration: underline;
+}
+
 .badge {
   display: inline-flex;
   align-items: center;

@@ -155,3 +155,64 @@ export function Metric(props: { label: string; value: ReactNode; tone?: Tone }) 
 export function JsonBlock(props: { value: unknown }) {
   return <pre className="json-block">{JSON.stringify(props.value, null, 2)}</pre>;
 }
+
+/**
+ * A table header cell that links to the same page sorted by this column.
+ *
+ * The caller owns the href and the indicator, because building them needs
+ * the current query string — which is app state, not presentation. This
+ * component only knows how to render a header that looks clickable.
+ */
+export function SortableTh(props: { href: string; label: string; indicator?: string }) {
+  return (
+    <th scope="col">
+      <a className="sortable-th" href={props.href}>
+        {props.label}
+        {props.indicator ? <span aria-hidden="true">{props.indicator}</span> : null}
+      </a>
+    </th>
+  );
+}
+
+/**
+ * Previous / Next controls with a page readout.
+ *
+ * Note that a disabled edge renders a <span>, not a `Button`. `Button` with
+ * an `href` renders an anchor, and an anchor with aria-disabled is still
+ * followable — "disabled" would be a visual lie you could click through.
+ * When there is nowhere to go, there is no link.
+ */
+export function PaginationControls(props: {
+  page: number;
+  totalPages: number;
+  totalItems: number;
+  previousHref: string;
+  nextHref: string;
+  itemLabel?: string;
+}) {
+  const hasPrevious = props.page > 1;
+  const hasNext = props.page < props.totalPages;
+  const label = props.itemLabel ?? "results";
+
+  return (
+    <div className="actions pagination">
+      <span className="muted">
+        Page {props.page} of {props.totalPages} &middot; {props.totalItems} {label}
+      </span>
+      {hasPrevious ? (
+        <a className="button button--secondary" href={props.previousHref}>
+          Previous
+        </a>
+      ) : (
+        <span className="button button--secondary button--inert">Previous</span>
+      )}
+      {hasNext ? (
+        <a className="button button--secondary" href={props.nextHref}>
+          Next
+        </a>
+      ) : (
+        <span className="button button--secondary button--inert">Next</span>
+      )}
+    </div>
+  );
+}
