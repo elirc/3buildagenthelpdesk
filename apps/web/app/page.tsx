@@ -1,16 +1,36 @@
+import type { Prisma } from "@prisma/client";
 import { Badge, Card, DataTable, Metric, PageHeader } from "@agentdesk/ui";
 import { prisma } from "@agentdesk/db";
-import { labelMaps } from "@agentdesk/shared";
-import { getSlaState } from "@agentdesk/domain";
-import { formatDateTime, logLevelTone, priorityTone, ticketStatusTone } from "../lib/format";
+import { labelMaps, TICKET_PRIORITIES } from "@agentdesk/shared";
+import { formatDateTime, logLevelTone, priorityTone } from "../lib/format";
 import { requireCurrentUser } from "../lib/auth";
 
 export const dynamic = "force-dynamic";
 
+/** Tickets are "on the SLA watchlist" once they are inside the 4h warning
+ *  window used by getSlaState, which includes everything already breached. */
+const SLA_WARNING_WINDOW_MS = 4 * 60 * 60 * 1000;
+
 export default async function DashboardPage() {
   const currentUser = await requireCurrentUser();
+
+  // Every metric on this page is a number, so every metric is a count query.
+  //
+  // This used to load every open ticket into memory and then call .length,
+  // .reduce and .filter on the array. That works on seed data and quietly
+  // becomes the slowest page in the app once an organization has a real
+  // backlog: it transfers thousands of rows, plus two joins each, to
+  // produce four integers.
+  const openTicketWhere: Prisma.TicketWhereInput = {
+    organizationId: currentUser.organizationId,
+    status: { notIn: ["RESOLVED", "CLOSED"] }
+  };
+  const slaWatchCutoff = new Date(Date.now() + SLA_WARNING_WINDOW_MS);
+
   const [
-    openTickets,
+    openTicketCount,
+    openTicketsByPriority,
+    slaWatchCount,
     activeIncidents,
     failedJobs,
     prodErrorLogs,
@@ -18,11 +38,15 @@ export default async function DashboardPage() {
     recentAuditEvents,
     latestLogs
   ] = await Promise.all([
-    prisma.ticket.findMany({
-      where: { organizationId: currentUser.organizationId, status: { notIn: ["RESOLVED", "CLOSED"] } },
-      include: { assignedUser: true, incident: true },
-      orderBy: [{ priority: "desc" }, { updatedAt: "desc" }]
+    prisma.ticket.count({ where: openTicketWhere }),
+    prisma.ticket.groupBy({
+      by: ["priority"],
+      where: openTicketWhere,
+      _count: true
     }),
+    // "Approaching" and "breached" together are just "due within the warning
+    // window", so the database can answer this without us scoring each row.
+    prisma.ticket.count({ where: { ...openTicketWhere, slaDueAt: { lte: slaWatchCutoff } } }),
     prisma.incident.findMany({
       where: { organizationId: currentUser.organizationId, status: { not: "RESOLVED" } },
       include: { owner: true, _count: { select: { tickets: true, logs: true, jobs: true } } },
@@ -36,13 +60,12 @@ export default async function DashboardPage() {
     prisma.structuredLog.findMany({ where: { organizationId: currentUser.organizationId }, orderBy: { timestamp: "desc" }, take: 8 })
   ]);
 
-  const openByPriority = openTickets.reduce<Record<string, number>>((acc, ticket) => {
-    acc[ticket.priority] = (acc[ticket.priority] ?? 0) + 1;
-    return acc;
-  }, {});
-  const slaBreaching = openTickets.filter((ticket) =>
-    ["approaching", "breached"].includes(getSlaState({ status: ticket.status, slaDueAt: ticket.slaDueAt, resolvedAt: ticket.resolvedAt }))
-  );
+  // groupBy only returns rows for priorities that actually occur, so a
+  // priority with no open tickets is absent rather than zero. Fold the
+  // result into a lookup that answers for all four.
+  const openByPriority = Object.fromEntries(
+    openTicketsByPriority.map((row) => [row.priority, row._count])
+  ) as Partial<Record<(typeof TICKET_PRIORITIES)[number], number>>;
 
   return (
     <>
@@ -51,8 +74,8 @@ export default async function DashboardPage() {
       </PageHeader>
 
       <div className="grid grid--4">
-        <Metric label="Open Tickets" value={openTickets.length} tone="info" />
-        <Metric label="SLA Watch" value={slaBreaching.length} tone={slaBreaching.length > 0 ? "warning" : "success"} />
+        <Metric label="Open Tickets" value={openTicketCount} tone="info" />
+        <Metric label="SLA Watch" value={slaWatchCount} tone={slaWatchCount > 0 ? "warning" : "success"} />
         <Metric label="Active Incidents" value={activeIncidents.length} tone={activeIncidents.length > 0 ? "danger" : "success"} />
         <Metric label="Failed Jobs" value={failedJobs} tone={failedJobs > 0 ? "danger" : "success"} />
       </div>
@@ -60,7 +83,7 @@ export default async function DashboardPage() {
       <div className="grid grid--2" style={{ marginTop: 16 }}>
         <Card title="Open Tickets by Priority">
           <div className="grid grid--4">
-            {(["LOW", "MEDIUM", "HIGH", "CRITICAL"] as const).map((priority) => (
+            {TICKET_PRIORITIES.map((priority) => (
               <Metric key={priority} label={labelMaps.priority[priority]} value={openByPriority[priority] ?? 0} tone={priorityTone(priority)} />
             ))}
           </div>
