@@ -1,0 +1,59 @@
+name: CI
+
+# Runs on every pull request and on every push to main.
+#
+# Why both? The pull_request trigger is what gates review — it tells you
+# whether the change is safe to merge. The push trigger on main is the
+# safety net that catches anything that reached main another way, and it
+# gives main a visible green/red history of its own.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# If you push twice in quick succession, cancel the first run. Without
+# this, CI queues up runs for commits nobody is waiting on any more.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Typecheck, test, lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the branch
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          # Caches ~/.npm keyed on package-lock.json. Turns a ~60s install
+          # into a few seconds on any run where dependencies did not change.
+          cache: npm
+
+      # `npm ci`, not `npm install`. `ci` installs exactly what
+      # package-lock.json pins and fails if the lockfile and package.json
+      # disagree. That is what you want in automation: reproducible, and
+      # loud when someone forgets to commit a lockfile change.
+      - name: Install dependencies
+        run: npm ci
+
+      # The Prisma client is generated code. It is not committed, so every
+      # type that references it would be `any`/missing without this step,
+      # and typecheck would either fail or silently pass on nonsense.
+      # No database is needed — generate reads the schema file only.
+      - name: Generate Prisma client
+        run: npm run db:generate
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm run test
+
+      - name: Lint
+        run: npm run lint
