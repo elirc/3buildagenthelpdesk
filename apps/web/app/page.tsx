@@ -2,14 +2,16 @@ import type { Prisma } from "@prisma/client";
 import { Badge, Card, DataTable, Metric, PageHeader } from "@agentdesk/ui";
 import { prisma } from "@agentdesk/db";
 import { labelMaps, TICKET_PRIORITIES } from "@agentdesk/shared";
+import { SLA_WARNING_WINDOW_HOURS } from "@agentdesk/domain";
 import { formatDateTime, logLevelTone, priorityTone } from "../lib/format";
 import { requireCurrentUser } from "../lib/auth";
 
 export const dynamic = "force-dynamic";
 
-/** Tickets are "on the SLA watchlist" once they are inside the 4h warning
- *  window used by getSlaState, which includes everything already breached. */
-const SLA_WARNING_WINDOW_MS = 4 * 60 * 60 * 1000;
+/** Tickets are "on the SLA watchlist" once they are inside the warning
+ *  window used by getSlaState, which includes everything already breached.
+ *  The window itself is owned by the domain so the two cannot drift. */
+const SLA_WARNING_WINDOW_MS = SLA_WARNING_WINDOW_HOURS * 60 * 60 * 1000;
 
 export default async function DashboardPage() {
   const currentUser = await requireCurrentUser();
@@ -30,7 +32,7 @@ export default async function DashboardPage() {
   const [
     openTicketCount,
     openTicketsByPriority,
-    slaWatchCount,
+    slaWatchRows,
     activeIncidents,
     failedJobs,
     prodErrorLogs,
@@ -45,8 +47,28 @@ export default async function DashboardPage() {
       _count: true
     }),
     // "Approaching" and "breached" together are just "due within the warning
-    // window", so the database can answer this without us scoring each row.
-    prisma.ticket.count({ where: { ...openTicketWhere, slaDueAt: { lte: slaWatchCutoff } } }),
+    // window", so the database can answer this without scoring each row.
+    //
+    // Raw SQL because the effective deadline is slaDueAt plus two other
+    // columns, and Prisma's query builder cannot compare a column against
+    // an expression built from other columns. The alternatives were to load
+    // every open ticket and score it in JS — the exact problem the rest of
+    // this page just stopped doing — or to ignore paused time and report a
+    // number that contradicts the ticket pages. Neither is better than one
+    // readable query.
+    //
+    // The interpolations are parameterised by Prisma's tagged template, not
+    // string-concatenated, so this is not an injection surface.
+    prisma.$queryRaw<Array<{ count: number }>>`
+      SELECT COUNT(*)::int AS count
+      FROM "Ticket"
+      WHERE "organizationId" = ${currentUser.organizationId}
+        AND "status" NOT IN ('RESOLVED', 'CLOSED')
+        AND "slaDueAt"
+              + make_interval(secs => "slaPausedTotalMs" / 1000.0)
+              + COALESCE(now() - "slaPausedAt", interval '0')
+            <= ${slaWatchCutoff}
+    `,
     prisma.incident.findMany({
       where: { organizationId: currentUser.organizationId, status: { not: "RESOLVED" } },
       include: { owner: true, _count: { select: { tickets: true, logs: true, jobs: true } } },
@@ -63,6 +85,9 @@ export default async function DashboardPage() {
   // groupBy only returns rows for priorities that actually occur, so a
   // priority with no open tickets is absent rather than zero. Fold the
   // result into a lookup that answers for all four.
+  // COUNT always returns exactly one row, but the type is an array.
+  const slaWatchCount = slaWatchRows[0]?.count ?? 0;
+
   const openByPriority = Object.fromEntries(
     openTicketsByPriority.map((row) => [row.priority, row._count])
   ) as Partial<Record<(typeof TICKET_PRIORITIES)[number], number>>;
