@@ -7,7 +7,15 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: agentdesk
     ports:
-      - "5432:5432"
+      # Host port 5462, not 5432. A developer machine usually has several
+      # projects with their own Postgres, and the first one started wins
+      # the default port — the rest fail with "port is already allocated".
+      # Giving this project a dedicated host port means it can run
+      # alongside the others instead of competing with them.
+      #
+      # Only the host side moves. Inside the container Postgres still
+      # listens on 5432, so nothing about the image or its config changes.
+      - "5462:5432"
     volumes:
       - agentdesk-postgres-data:/var/lib/postgresql/data
     healthcheck:
