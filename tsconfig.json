@@ -1,0 +1,42 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["dom", "dom.iterable", "ES2022"],
+    "allowJs": false,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "baseUrl": ".",
+    "paths": {
+      "@agentdesk/shared": ["packages/shared/src/index.ts"],
+      "@agentdesk/shared/*": ["packages/shared/src/*"],
+      "@agentdesk/domain": ["packages/domain/src/index.ts"],
+      "@agentdesk/domain/*": ["packages/domain/src/*"],
+      "@agentdesk/observability": ["packages/observability/src/index.ts"],
+      "@agentdesk/observability/*": ["packages/observability/src/*"],
+      "@agentdesk/agents": ["packages/agents/src/index.ts"],
+      "@agentdesk/agents/*": ["packages/agents/src/*"],
+      "@agentdesk/db": ["packages/db/src/index.ts"],
+      "@agentdesk/db/*": ["packages/db/src/*"],
+      "@agentdesk/ui": ["packages/ui/src/index.tsx"],
+      "@agentdesk/ui/*": ["packages/ui/src/*"]
+    },
+    "plugins": [{ "name": "next" }]
+  },
+  "include": [
+    "apps/**/*.ts",
+    "apps/**/*.tsx",
+    "packages/**/*.ts",
+    "packages/**/*.tsx",
+    "tests/**/*.ts",
+    "next-env.d.ts"
+  ],
+  "exclude": ["node_modules"]
+}

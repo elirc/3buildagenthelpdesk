@@ -1,0 +1,328 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  SUPPORT_AGENT
+  ENGINEERING
+  MANAGER
+  VIEWER
+}
+
+enum TicketStatus {
+  NEW
+  TRIAGE
+  IN_PROGRESS
+  WAITING_ON_CUSTOMER
+  ESCALATED
+  RESOLVED
+  CLOSED
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum TicketCategory {
+  ACCESS
+  BILLING
+  BUG
+  PERFORMANCE
+  INTEGRATION
+  SECURITY
+  OTHER
+}
+
+enum IncidentStatus {
+  INVESTIGATING
+  IDENTIFIED
+  MONITORING
+  RESOLVED
+}
+
+enum IncidentSeverity {
+  SEV1
+  SEV2
+  SEV3
+  SEV4
+}
+
+enum LogEnvironment {
+  development
+  staging
+  production
+}
+
+enum LogLevel {
+  debug
+  info
+  warn
+  error
+  fatal
+}
+
+enum JobType {
+  EMAIL_NOTIFICATION
+  WEBHOOK_DELIVERY
+  SLA_ESCALATION
+  REPORT_GENERATION
+  DATA_SYNC
+  AGENT_RUN
+}
+
+enum JobStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  RETRYING
+  DEAD_LETTERED
+}
+
+enum AgentType {
+  TICKET_SUMMARIZATION
+  LOG_ANOMALY_DETECTION
+  FAILED_JOB_INVESTIGATION
+}
+
+enum AgentRunStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+enum AgentTargetType {
+  TICKET
+  INCIDENT
+  LOG_GROUP
+  JOB
+}
+
+model Organization {
+  id          String          @id @default(cuid())
+  name        String
+  slug        String          @unique
+  users       User[]
+  teams       Team[]
+  tickets     Ticket[]
+  incidents   Incident[]
+  logs        StructuredLog[]
+  jobs        BackgroundJob[]
+  agentRuns   AgentRun[]
+  auditEvents AuditEvent[]
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+}
+
+model User {
+  id              String          @id @default(cuid())
+  organizationId  String
+  organization    Organization    @relation(fields: [organizationId], references: [id])
+  name            String
+  email           String          @unique
+  role            UserRole
+  teamId          String?
+  team            Team?           @relation(fields: [teamId], references: [id])
+  assignedTickets Ticket[]        @relation("AssignedTickets")
+  comments        TicketComment[]
+  ownedIncidents  Incident[]      @relation("IncidentOwner")
+  auditEvents     AuditEvent[]
+  agentRuns       AgentRun[]
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@index([organizationId, role])
+}
+
+model Team {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  name           String
+  slug           String
+  users          User[]
+  tickets        Ticket[]
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@unique([organizationId, slug])
+  @@unique([organizationId, name])
+  @@index([organizationId])
+}
+
+model Ticket {
+  id             String          @id @default(cuid())
+  organizationId String
+  organization   Organization    @relation(fields: [organizationId], references: [id])
+  title          String
+  description    String
+  customerName   String
+  requesterEmail String
+  status         TicketStatus    @default(NEW)
+  priority       TicketPriority
+  category       TicketCategory
+  assignedTeamId String?
+  assignedTeam   Team?           @relation(fields: [assignedTeamId], references: [id])
+  assignedUserId String?
+  assignedUser   User?           @relation("AssignedTickets", fields: [assignedUserId], references: [id])
+  slaDueAt       DateTime
+  resolvedAt     DateTime?
+  incidentId     String?
+  incident       Incident?       @relation(fields: [incidentId], references: [id])
+  tags           String[]        @default([])
+  comments       TicketComment[]
+  logs           StructuredLog[]
+  jobs           BackgroundJob[]
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@index([organizationId, status, priority])
+  @@index([organizationId, incidentId])
+  @@index([organizationId, assignedUserId])
+}
+
+model TicketComment {
+  id         String   @id @default(cuid())
+  ticketId   String
+  ticket     Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  authorId   String
+  author     User     @relation(fields: [authorId], references: [id])
+  body       String
+  isInternal Boolean  @default(true)
+  createdAt  DateTime @default(now())
+}
+
+model Incident {
+  id              String           @id @default(cuid())
+  organizationId  String
+  organization    Organization     @relation(fields: [organizationId], references: [id])
+  title           String
+  description     String
+  status          IncidentStatus   @default(INVESTIGATING)
+  severity        IncidentSeverity
+  affectedService String
+  startedAt       DateTime         @default(now())
+  resolvedAt      DateTime?
+  ownerId         String?
+  owner           User?            @relation("IncidentOwner", fields: [ownerId], references: [id])
+  tickets         Ticket[]
+  logs            StructuredLog[]
+  jobs            BackgroundJob[]
+  agentFindings   Json?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  @@index([organizationId, status, severity])
+  @@index([organizationId, affectedService])
+}
+
+model StructuredLog {
+  id               String         @id @default(cuid())
+  organizationId   String
+  organization     Organization   @relation(fields: [organizationId], references: [id])
+  timestamp        DateTime       @default(now())
+  service          String
+  environment      LogEnvironment
+  level            LogLevel
+  message          String
+  requestId        String
+  userId           String?
+  ticketId         String?
+  ticket           Ticket?        @relation(fields: [ticketId], references: [id])
+  incidentId       String?
+  incident         Incident?      @relation(fields: [incidentId], references: [id])
+  metadata         Json           @default("{}")
+  fingerprint      String
+  requestContextId String?
+
+  @@index([organizationId, service, environment, level])
+  @@index([organizationId, fingerprint])
+  @@index([organizationId, ticketId])
+  @@index([organizationId, incidentId])
+  @@index([organizationId, timestamp])
+}
+
+model BackgroundJob {
+  id                String       @id @default(cuid())
+  organizationId    String
+  organization      Organization @relation(fields: [organizationId], references: [id])
+  type              JobType
+  status            JobStatus
+  attempts          Int          @default(0)
+  maxAttempts       Int          @default(3)
+  payload           Json         @default("{}")
+  errorMessage      String?
+  requestContextId  String?
+  lockedAt          DateTime?
+  lockedBy          String?
+  startedAt         DateTime?
+  finishedAt        DateTime?
+  createdAt         DateTime     @default(now())
+  relatedTicketId   String?
+  relatedTicket     Ticket?      @relation(fields: [relatedTicketId], references: [id])
+  relatedIncidentId String?
+  relatedIncident   Incident?    @relation(fields: [relatedIncidentId], references: [id])
+
+  @@index([organizationId, status, type])
+  @@index([organizationId, relatedTicketId])
+  @@index([organizationId, relatedIncidentId])
+  @@index([organizationId, createdAt])
+  @@index([status, lockedAt])
+}
+
+model AgentRun {
+  id               String          @id @default(cuid())
+  organizationId   String
+  organization     Organization    @relation(fields: [organizationId], references: [id])
+  agentType        AgentType
+  status           AgentRunStatus  @default(PENDING)
+  targetType       AgentTargetType
+  targetId         String
+  inputSnapshot    Json
+  output           Json?
+  confidenceScore  Float?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  errorMessage     String?
+  requestContextId String?
+  agentVersion     String          @default("1")
+  createdByUserId  String?
+  createdBy        User?           @relation(fields: [createdByUserId], references: [id])
+  trace            Json?
+  createdAt        DateTime        @default(now())
+
+  @@index([organizationId, agentType, status])
+  @@index([organizationId, targetType, targetId])
+  @@index([organizationId, createdAt])
+}
+
+model AuditEvent {
+  id               String       @id @default(cuid())
+  organizationId   String
+  organization     Organization @relation(fields: [organizationId], references: [id])
+  actorUserId      String?
+  actor            User?        @relation(fields: [actorUserId], references: [id])
+  action           String
+  entityType       String
+  entityId         String
+  before           Json?
+  after            Json?
+  metadata         Json         @default("{}")
+  requestContextId String?
+  createdAt        DateTime     @default(now())
+
+  @@index([organizationId, entityType, entityId])
+  @@index([organizationId, action])
+  @@index([organizationId, createdAt])
+  @@index([requestContextId])
+}

@@ -1,0 +1,269 @@
+import { notFound } from "next/navigation";
+import { Badge, Button, Card, DataTable, DescriptionList, Field, JsonBlock, PageHeader, Select, TextArea, TextInput } from "@agentdesk/ui";
+import { prisma } from "@agentdesk/db";
+import {
+  allowedTicketTransitions,
+  canMutateTickets
+} from "@agentdesk/domain";
+import { labelMaps, TICKET_CATEGORIES, TICKET_PRIORITIES } from "@agentdesk/shared";
+import { addTicketCommentAction, runTicketAgentAction, updateTicketAction } from "../../../lib/actions";
+import { formatDateTime, priorityTone, slaTone, ticketStatusTone } from "../../../lib/format";
+import { requireCurrentUser } from "../../../lib/auth";
+
+export const dynamic = "force-dynamic";
+
+export default async function TicketDetailPage({ params }: { params: { id: string } }) {
+  const currentUser = await requireCurrentUser();
+  const [ticket, teams, users, incidents, agentRuns, auditEvents] = await Promise.all([
+    prisma.ticket.findFirst({
+      where: { id: params.id, organizationId: currentUser.organizationId },
+      include: {
+        assignedTeam: true,
+        assignedUser: true,
+        incident: true,
+        comments: { include: { author: true }, orderBy: { createdAt: "asc" } },
+        logs: { orderBy: { timestamp: "desc" }, take: 8 },
+        jobs: { orderBy: { createdAt: "desc" }, take: 8 }
+      }
+    }),
+    prisma.team.findMany({ where: { organizationId: currentUser.organizationId }, orderBy: { name: "asc" } }),
+    prisma.user.findMany({ where: { organizationId: currentUser.organizationId }, orderBy: { name: "asc" } }),
+    prisma.incident.findMany({ where: { organizationId: currentUser.organizationId }, orderBy: { startedAt: "desc" } }),
+    prisma.agentRun.findMany({
+      where: { organizationId: currentUser.organizationId, targetType: "TICKET", targetId: params.id },
+      include: { createdBy: true },
+      orderBy: { createdAt: "desc" },
+      take: 5
+    }),
+    prisma.auditEvent.findMany({
+      where: { organizationId: currentUser.organizationId, entityType: "Ticket", entityId: params.id },
+      include: { actor: true },
+      orderBy: { createdAt: "desc" },
+      take: 12
+    })
+  ]);
+
+  if (!ticket) notFound();
+
+  const writable = canMutateTickets(currentUser.role);
+  const nextStatuses = Array.from(new Set([ticket.status, ...allowedTicketTransitions[ticket.status]]));
+  const sla = slaTone({ status: ticket.status, slaDueAt: ticket.slaDueAt, resolvedAt: ticket.resolvedAt });
+  const latestAgentRun = agentRuns[0];
+
+  return (
+    <>
+      <PageHeader
+        title={ticket.title}
+        eyebrow={ticket.customerName}
+        actions={
+          <form action={runTicketAgentAction}>
+            <input type="hidden" name="ticketId" value={ticket.id} />
+            <Button type="submit" variant="primary">Run Ticket Agent</Button>
+          </form>
+        }
+      >
+        <div className="pill-list">
+          <Badge tone={ticketStatusTone(ticket.status)}>{labelMaps.ticketStatus[ticket.status]}</Badge>
+          <Badge tone={priorityTone(ticket.priority)}>{labelMaps.priority[ticket.priority]}</Badge>
+          <Badge tone={sla.tone}>{sla.label}</Badge>
+        </div>
+      </PageHeader>
+
+      <div className="detail-grid">
+        <div className="grid">
+          <Card title="Ticket Details">
+            <DescriptionList
+              items={[
+                { label: "Requester", value: ticket.requesterEmail },
+                { label: "Category", value: labelMaps.category[ticket.category] },
+                { label: "Assigned Team", value: ticket.assignedTeam?.name ?? "Unassigned" },
+                { label: "Assigned User", value: ticket.assignedUser?.name ?? "Unassigned" },
+                { label: "SLA Due", value: formatDateTime(ticket.slaDueAt) },
+                { label: "Incident", value: ticket.incident ? <a href={`/incidents/${ticket.incident.id}`}>{ticket.incident.title}</a> : "None" }
+              ]}
+            />
+            <p>{ticket.description}</p>
+            <div className="pill-list">
+              {ticket.tags.map((tag) => (
+                <Badge key={tag}>{tag}</Badge>
+              ))}
+            </div>
+          </Card>
+
+          <Card title="Edit Ticket">
+            <form action={updateTicketAction} className="form-grid">
+              <input type="hidden" name="ticketId" value={ticket.id} />
+              <Field label="Title">
+                <TextInput name="title" defaultValue={ticket.title} required />
+              </Field>
+              <Field label="Description">
+                <TextArea name="description" defaultValue={ticket.description} required rows={6} />
+              </Field>
+              <div className="form-grid form-grid--2">
+                <Field label="Customer">
+                  <TextInput name="customerName" defaultValue={ticket.customerName} required />
+                </Field>
+                <Field label="Requester Email">
+                  <TextInput name="requesterEmail" defaultValue={ticket.requesterEmail} required type="email" />
+                </Field>
+                <Field label="Status">
+                  <Select name="status" defaultValue={ticket.status}>
+                    {nextStatuses.map((status) => (
+                      <option key={status} value={status}>
+                        {labelMaps.ticketStatus[status]}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                <Field label="Priority">
+                  <Select name="priority" defaultValue={ticket.priority}>
+                    {TICKET_PRIORITIES.map((priority) => (
+                      <option key={priority} value={priority}>
+                        {labelMaps.priority[priority]}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                <Field label="Category">
+                  <Select name="category" defaultValue={ticket.category}>
+                    {TICKET_CATEGORIES.map((category) => (
+                      <option key={category} value={category}>
+                        {labelMaps.category[category]}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                <Field label="Tags">
+                  <TextInput name="tags" defaultValue={ticket.tags.join(", ")} />
+                </Field>
+                <Field label="Assigned Team">
+                  <Select name="assignedTeamId" defaultValue={ticket.assignedTeamId ?? ""}>
+                    <option value="">Unassigned</option>
+                    {teams.map((team) => (
+                      <option key={team.id} value={team.id}>
+                        {team.name}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                <Field label="Assigned User">
+                  <Select name="assignedUserId" defaultValue={ticket.assignedUserId ?? ""}>
+                    <option value="">Unassigned</option>
+                    {users.map((user) => (
+                      <option key={user.id} value={user.id}>
+                        {user.name}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                <Field label="Linked Incident">
+                  <Select name="incidentId" defaultValue={ticket.incidentId ?? ""}>
+                    <option value="">None</option>
+                    {incidents.map((incident) => (
+                      <option key={incident.id} value={incident.id}>
+                        {incident.severity} - {incident.title}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+              </div>
+              <Button type="submit" variant="primary" disabled={!writable}>Save Changes</Button>
+            </form>
+          </Card>
+
+          <Card title="Comments and Internal Notes">
+            <div className="timeline">
+              {ticket.comments.map((comment) => (
+                <div className="timeline-item" key={comment.id}>
+                  <time>{formatDateTime(comment.createdAt)}</time>
+                  <strong>{comment.author.name}</strong> <Badge tone={comment.isInternal ? "warning" : "info"}>{comment.isInternal ? "Internal" : "Customer"}</Badge>
+                  <p>{comment.body}</p>
+                </div>
+              ))}
+            </div>
+            <form action={addTicketCommentAction} className="form-grid" style={{ marginTop: 16 }}>
+              <input type="hidden" name="ticketId" value={ticket.id} />
+              <Field label="Add Note">
+                <TextArea name="body" rows={4} />
+              </Field>
+              <label>
+                <input type="checkbox" name="isInternal" defaultChecked /> Internal note
+              </label>
+              <Button type="submit" disabled={!writable}>Add Note</Button>
+            </form>
+          </Card>
+        </div>
+
+        <div className="grid">
+          <Card title="Agent Summary">
+            {latestAgentRun ? (
+              <>
+                <DescriptionList
+                  items={[
+                    { label: "Agent", value: labelMaps.agentType[latestAgentRun.agentType] },
+                    { label: "Status", value: latestAgentRun.status },
+                    { label: "Confidence", value: latestAgentRun.confidenceScore == null ? "Pending" : `${Math.round(latestAgentRun.confidenceScore)}%` },
+                    { label: "Run At", value: formatDateTime(latestAgentRun.createdAt) }
+                  ]}
+                />
+                <div style={{ marginTop: 12 }}>
+                  <Button href={`/agents/${latestAgentRun.id}`}>Open Run</Button>
+                </div>
+              </>
+            ) : (
+              <p className="muted">No agent run yet.</p>
+            )}
+          </Card>
+
+          <Card title="Linked Logs">
+            <DataTable>
+              <tbody>
+                {ticket.logs.map((log) => (
+                  <tr key={log.id}>
+                    <td>
+                      <a href={`/logs/${log.id}`}>{log.message}</a>
+                      <div className="muted">{log.service} - {formatDateTime(log.timestamp)}</div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </DataTable>
+          </Card>
+
+          <Card title="Related Jobs">
+            <DataTable>
+              <tbody>
+                {ticket.jobs.map((job) => (
+                  <tr key={job.id}>
+                    <td>
+                      <a href={`/jobs/${job.id}`}>{labelMaps.jobType[job.type]}</a>
+                      <div className="muted">{labelMaps.jobStatus[job.status]} - {job.attempts}/{job.maxAttempts}</div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </DataTable>
+          </Card>
+
+          <Card title="Audit History">
+            <div className="timeline">
+              {auditEvents.map((event) => (
+                <div className="timeline-item" key={event.id}>
+                  <time>{formatDateTime(event.createdAt)}</time>
+                  <strong>{event.action}</strong>
+                  <p className="muted">{event.actor?.name ?? "System"}</p>
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          {latestAgentRun?.output ? (
+            <Card title="Latest Agent Output">
+              <JsonBlock value={latestAgentRun.output} />
+            </Card>
+          ) : null}
+        </div>
+      </div>
+    </>
+  );
+}
