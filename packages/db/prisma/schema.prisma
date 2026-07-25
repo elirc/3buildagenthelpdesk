@@ -120,6 +120,7 @@ model Organization {
   jobs        BackgroundJob[]
   agentRuns   AgentRun[]
   auditEvents AuditEvent[]
+  cannedReplies CannedReply[]
   createdAt   DateTime        @default(now())
   updatedAt   DateTime        @updatedAt
 }
@@ -138,6 +139,7 @@ model User {
   ownedIncidents  Incident[]      @relation("IncidentOwner")
   auditEvents     AuditEvent[]
   agentRuns       AgentRun[]
+  cannedReplies   CannedReply[]   @relation("CannedReplies")
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
 
@@ -209,7 +211,35 @@ model TicketComment {
   author     User     @relation(fields: [authorId], references: [id])
   body       String
   isInternal Boolean  @default(true)
+  // Which template this reply started from, if any. Nullable and never
+  // cascading: the comment is the record of what was actually said, and it
+  // must survive the template being edited or retired afterwards.
+  cannedReplyId String?
+  cannedReply   CannedReply? @relation(fields: [cannedReplyId], references: [id])
   createdAt  DateTime @default(now())
+}
+
+model CannedReply {
+  id             String          @id @default(cuid())
+  organizationId String
+  organization   Organization    @relation(fields: [organizationId], references: [id])
+  title          String
+  body           String
+  // Null means the template is offered on every ticket. A category scopes
+  // it to tickets of that kind.
+  category       TicketCategory?
+  // Retired templates are deactivated rather than deleted, so historical
+  // comments keep pointing at something real.
+  isActive       Boolean         @default(true)
+  createdById    String?
+  createdBy      User?           @relation("CannedReplies", fields: [createdById], references: [id])
+  usageCount     Int             @default(0)
+  comments       TicketComment[]
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@unique([organizationId, title])
+  @@index([organizationId, category, isActive])
 }
 
 model Incident {

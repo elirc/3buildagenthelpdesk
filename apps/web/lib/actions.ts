@@ -10,9 +10,11 @@ import {
   assertIncidentTransition,
   assertTicketTransition,
   calculateSlaDueAt,
+  cannedReplySchema,
   canRetryJob,
   createIncidentSchema,
   createTicketSchema,
+  extractVariables,
   normalizeTags,
   requireCapability,
   type Capability
@@ -312,14 +314,36 @@ export async function addTicketCommentAction(formData: FormData) {
   const body = stringValue(formData, "body");
   if (body.length < 2) return;
 
+  // A template only counts as used when a comment is actually posted.
+  // Previewing one in the box is not usage, or usageCount would measure
+  // curiosity rather than usefulness.
+  const cannedReplyId = optionalStringValue(formData, "cannedReplyId");
+  if (cannedReplyId) {
+    const template = await prisma.cannedReply.findFirst({
+      where: { id: cannedReplyId, organizationId: user.organizationId },
+      select: { id: true }
+    });
+    if (!template) {
+      throw new ActionError("Selected reply template is outside the active organization.");
+    }
+  }
+
   await prisma.ticketComment.create({
     data: {
       ticketId,
       authorId: user.id,
       body,
-      isInternal: formData.get("isInternal") === "on"
+      isInternal: formData.get("isInternal") === "on",
+      cannedReplyId
     }
   });
+
+  if (cannedReplyId) {
+    await prisma.cannedReply.update({
+      where: { id: cannedReplyId },
+      data: { usageCount: { increment: 1 } }
+    });
+  }
 
   await writeAuditEvent({
     organizationId: user.organizationId,
@@ -621,4 +645,125 @@ export async function runJobAgentAction(formData: FormData) {
 
   revalidatePath(`/jobs/${jobId}`);
   redirect(`/agents/${run.id}`);
+}
+
+/* -------------------------------------------------------------------------
+ * Canned replies
+ *
+ * Templates are shared text that goes out under the company's name, so
+ * authoring them is gated on canned_reply:manage (ADMIN and MANAGER) while
+ * *using* one needs only the ability to comment.
+ * ---------------------------------------------------------------------- */
+
+function parseCannedReplyForm(formData: FormData) {
+  return cannedReplySchema.parse({
+    title: stringValue(formData, "title"),
+    body: stringValue(formData, "body"),
+    // An empty select means "applies to every category", which is null in
+    // the database rather than the empty string a form would otherwise send.
+    category: optionalStringValue(formData, "category"),
+    isActive: formData.get("isActive") !== "off"
+  });
+}
+
+export async function createCannedReplyAction(formData: FormData) {
+  const { user, requestContext } = await requireActionUser("canned_reply.create", "canned_reply:manage");
+  const parsed = parseCannedReplyForm(formData);
+
+  // The unique constraint on (organizationId, title) would otherwise surface
+  // to the user as a raw Prisma error mentioning a constraint name.
+  const existing = await prisma.cannedReply.findFirst({
+    where: { organizationId: user.organizationId, title: parsed.title },
+    select: { id: true }
+  });
+  if (existing) {
+    throw new ActionError(`A reply template named "${parsed.title}" already exists.`);
+  }
+
+  const reply = await prisma.cannedReply.create({
+    data: {
+      organizationId: user.organizationId,
+      title: parsed.title,
+      body: parsed.body,
+      category: parsed.category ?? null,
+      isActive: parsed.isActive,
+      createdById: user.id
+    }
+  });
+
+  await writeAuditEvent({
+    organizationId: user.organizationId,
+    actorUserId: user.id,
+    action: "canned_reply.created",
+    entityType: "CannedReply",
+    entityId: reply.id,
+    after: { title: reply.title, category: reply.category, isActive: reply.isActive },
+    metadata: { actorRole: user.role, variables: extractVariables(reply.body) },
+    requestContextId: requestContext.requestContextId
+  });
+
+  revalidatePath("/settings");
+}
+
+export async function updateCannedReplyAction(formData: FormData) {
+  const { user, requestContext } = await requireActionUser("canned_reply.update", "canned_reply:manage");
+
+  const id = stringValue(formData, "cannedReplyId");
+  const before = await prisma.cannedReply.findFirst({ where: { id, organizationId: user.organizationId } });
+  assertCanAccessRecord(user, before, "Reply template");
+
+  const parsed = parseCannedReplyForm(formData);
+  const after = await prisma.cannedReply.update({
+    where: { id },
+    data: {
+      title: parsed.title,
+      body: parsed.body,
+      category: parsed.category ?? null,
+      isActive: parsed.isActive
+    }
+  });
+
+  await writeAuditEvent({
+    organizationId: user.organizationId,
+    actorUserId: user.id,
+    action: "canned_reply.updated",
+    entityType: "CannedReply",
+    entityId: id,
+    before: { title: before.title, category: before.category, isActive: before.isActive },
+    after: { title: after.title, category: after.category, isActive: after.isActive },
+    metadata: { actorRole: user.role },
+    requestContextId: requestContext.requestContextId
+  });
+
+  revalidatePath("/settings");
+}
+
+export async function deactivateCannedReplyAction(formData: FormData) {
+  const { user, requestContext } = await requireActionUser("canned_reply.deactivate", "canned_reply:manage");
+
+  const id = stringValue(formData, "cannedReplyId");
+  const before = await prisma.cannedReply.findFirst({ where: { id, organizationId: user.organizationId } });
+  assertCanAccessRecord(user, before, "Reply template");
+
+  // Deactivate, never delete. Comments point at the template they came from,
+  // and deleting it would either orphan that history or cascade away real
+  // customer correspondence.
+  const after = await prisma.cannedReply.update({
+    where: { id },
+    data: { isActive: !before.isActive }
+  });
+
+  await writeAuditEvent({
+    organizationId: user.organizationId,
+    actorUserId: user.id,
+    action: after.isActive ? "canned_reply.updated" : "canned_reply.deactivated",
+    entityType: "CannedReply",
+    entityId: id,
+    before: { isActive: before.isActive },
+    after: { isActive: after.isActive },
+    metadata: { actorRole: user.role },
+    requestContextId: requestContext.requestContextId
+  });
+
+  revalidatePath("/settings");
 }

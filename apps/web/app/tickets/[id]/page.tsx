@@ -3,7 +3,9 @@ import { Badge, Button, Card, DataTable, DescriptionList, Field, JsonBlock, Page
 import { prisma } from "@agentdesk/db";
 import {
   allowedTicketTransitions,
-  canMutateTickets
+  canMutateTickets,
+  renderCannedReply,
+  selectRepliesForTicket
 } from "@agentdesk/domain";
 import { labelMaps, TICKET_CATEGORIES, TICKET_PRIORITIES } from "@agentdesk/shared";
 import { addTicketCommentAction, runTicketAgentAction, updateTicketAction } from "../../../lib/actions";
@@ -12,9 +14,15 @@ import { requireCurrentUser } from "../../../lib/auth";
 
 export const dynamic = "force-dynamic";
 
-export default async function TicketDetailPage({ params }: { params: { id: string } }) {
+export default async function TicketDetailPage({
+  params,
+  searchParams
+}: {
+  params: { id: string };
+  searchParams: { replyId?: string };
+}) {
   const currentUser = await requireCurrentUser();
-  const [ticket, teams, users, incidents, agentRuns, auditEvents] = await Promise.all([
+  const [ticket, teams, users, incidents, agentRuns, auditEvents, cannedReplies] = await Promise.all([
     prisma.ticket.findFirst({
       where: { id: params.id, organizationId: currentUser.organizationId },
       include: {
@@ -40,6 +48,10 @@ export default async function TicketDetailPage({ params }: { params: { id: strin
       include: { actor: true },
       orderBy: { createdAt: "desc" },
       take: 12
+    }),
+    prisma.cannedReply.findMany({
+      where: { organizationId: currentUser.organizationId, isActive: true },
+      orderBy: { title: "asc" }
     })
   ]);
 
@@ -57,6 +69,27 @@ export default async function TicketDetailPage({ params }: { params: { id: strin
   // Time already banked, plus the pause running right now.
   const pausedSoFarMs =
     ticket.slaPausedTotalMs + (ticket.slaPausedAt ? Date.now() - ticket.slaPausedAt.getTime() : 0);
+
+  // Templates offered here are the ones matching this ticket's category plus
+  // the uncategorised ones. The filtering rule lives in the domain package so
+  // it is testable without a database.
+  const availableReplies = selectRepliesForTicket(cannedReplies, ticket.category);
+
+  // "Insert" is a GET that reloads this page with ?replyId=..., because the
+  // app ships no client JavaScript. The chosen template is rendered into the
+  // textarea's defaultValue, and the agent edits it before posting.
+  const selectedReply = searchParams.replyId
+    ? availableReplies.find((reply) => reply.id === searchParams.replyId)
+    : undefined;
+  const draftBody = selectedReply
+    ? renderCannedReply(selectedReply.body, {
+        customerName: ticket.customerName,
+        ticketTitle: ticket.title,
+        ticketId: ticket.id,
+        agentName: currentUser.name,
+        slaDueAt: formatDateTime(sla.effectiveDueAt)
+      })
+    : undefined;
   const latestAgentRun = agentRuns[0];
 
   return (
@@ -205,10 +238,32 @@ export default async function TicketDetailPage({ params }: { params: { id: strin
                 </div>
               ))}
             </div>
+            {availableReplies.length > 0 ? (
+              <form method="get" className="filter-bar" style={{ marginTop: 16 }}>
+                <Field label="Reply Template">
+                  <Select name="replyId" defaultValue={searchParams.replyId ?? ""}>
+                    <option value="">Start from scratch</option>
+                    {availableReplies.map((reply) => (
+                      <option key={reply.id} value={reply.id}>
+                        {reply.title}
+                        {reply.category ? ` (${labelMaps.category[reply.category]})` : ""}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                <Button type="submit">Insert</Button>
+              </form>
+            ) : null}
+
             <form action={addTicketCommentAction} className="form-grid" style={{ marginTop: 16 }}>
               <input type="hidden" name="ticketId" value={ticket.id} />
+              {selectedReply ? <input type="hidden" name="cannedReplyId" value={selectedReply.id} /> : null}
               <Field label="Add Note">
-                <TextArea name="body" rows={4} />
+                {/* `key` forces React to rebuild the textarea when a different
+                    template is chosen. Without it the element is reused and
+                    defaultValue — which only applies on mount — is ignored,
+                    so picking a second template would appear to do nothing. */}
+                <TextArea key={selectedReply?.id ?? "blank"} name="body" rows={4} defaultValue={draftBody} />
               </Field>
               <label>
                 <input type="checkbox" name="isInternal" defaultChecked /> Internal note

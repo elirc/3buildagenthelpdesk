@@ -1,13 +1,30 @@
-import { Badge, Card, DataTable, PageHeader, Select, Button, Field } from "@agentdesk/ui";
-import { labelMaps } from "@agentdesk/shared";
+import { Badge, Card, DataTable, EmptyState, PageHeader, Select, Button, Field, TextArea, TextInput } from "@agentdesk/ui";
+import { prisma } from "@agentdesk/db";
+import { labelMaps, TICKET_CATEGORIES } from "@agentdesk/shared";
+import { CANNED_REPLY_VARIABLES, extractVariables, hasCapability } from "@agentdesk/domain";
 import { getAuthProviderName, getCurrentUser, getUsersForSwitcher, isDemoAuthEnabled } from "../../lib/auth";
-import { setActiveUserAction } from "../../lib/actions";
+import {
+  createCannedReplyAction,
+  deactivateCannedReplyAction,
+  setActiveUserAction
+} from "../../lib/actions";
 
 export const dynamic = "force-dynamic";
 
 export default async function SettingsPage() {
   const [currentUser, users] = await Promise.all([getCurrentUser(), getUsersForSwitcher()]);
   const demoAuth = isDemoAuthEnabled();
+
+  // Templates are organization-scoped like everything else. A user with no
+  // resolved session sees none rather than everyone's.
+  const cannedReplies = currentUser
+    ? await prisma.cannedReply.findMany({
+        where: { organizationId: currentUser.organizationId },
+        include: { createdBy: true },
+        orderBy: [{ isActive: "desc" }, { title: "asc" }]
+      })
+    : [];
+  const canManageReplies = currentUser ? hasCapability(currentUser.role, "canned_reply:manage") : false;
 
   return (
     <>
@@ -57,6 +74,83 @@ export default async function SettingsPage() {
           </DataTable>
         </Card>
       </div>
+
+      <Card title="Reply Templates" className="mt">
+        <p className="muted">
+          Shared responses agents can insert into a ticket. Placeholders are filled in from the ticket when the
+          template is used. Available placeholders:{" "}
+          {CANNED_REPLY_VARIABLES.map((variable) => `{{${variable}}}`).join(", ")}.
+        </p>
+
+        {cannedReplies.length === 0 ? (
+          <EmptyState title="No reply templates yet">
+            Templates keep common answers consistent and save retyping the same reply.
+          </EmptyState>
+        ) : (
+          <DataTable>
+            <thead>
+              <tr>
+                <th scope="col">Template</th>
+                <th scope="col">Applies To</th>
+                <th scope="col">Placeholders</th>
+                <th scope="col">Used</th>
+                <th scope="col">Status</th>
+                {canManageReplies ? <th scope="col">Actions</th> : null}
+              </tr>
+            </thead>
+            <tbody>
+              {cannedReplies.map((reply) => (
+                <tr key={reply.id}>
+                  <td>
+                    {reply.title}
+                    <div className="muted">{reply.body.slice(0, 90)}{reply.body.length > 90 ? "…" : ""}</div>
+                  </td>
+                  <td>{reply.category ? labelMaps.category[reply.category] : <span className="muted">All categories</span>}</td>
+                  <td className="muted">{extractVariables(reply.body).join(", ") || "None"}</td>
+                  <td>{reply.usageCount}</td>
+                  <td>
+                    <Badge tone={reply.isActive ? "success" : "neutral"}>{reply.isActive ? "Active" : "Inactive"}</Badge>
+                  </td>
+                  {canManageReplies ? (
+                    <td>
+                      <form action={deactivateCannedReplyAction}>
+                        <input type="hidden" name="cannedReplyId" value={reply.id} />
+                        <Button type="submit">{reply.isActive ? "Deactivate" : "Reactivate"}</Button>
+                      </form>
+                    </td>
+                  ) : null}
+                </tr>
+              ))}
+            </tbody>
+          </DataTable>
+        )}
+
+        {canManageReplies ? (
+          <form action={createCannedReplyAction} className="form-grid" style={{ marginTop: 16 }}>
+            <div className="form-grid form-grid--2">
+              <Field label="Title">
+                <TextInput name="title" required placeholder="Acknowledge and ask for reproduction steps" />
+              </Field>
+              <Field label="Applies To">
+                <Select name="category" defaultValue="">
+                  <option value="">All categories</option>
+                  {TICKET_CATEGORIES.map((category) => (
+                    <option key={category} value={category}>
+                      {labelMaps.category[category]}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            </div>
+            <Field label="Body" hint="Use {{customerName}}, {{agentName}} and the other placeholders listed above.">
+              <TextArea name="body" required rows={5} />
+            </Field>
+            <Button type="submit" variant="primary">Create Template</Button>
+          </form>
+        ) : (
+          <p className="muted">Your role can use reply templates but not author them.</p>
+        )}
+      </Card>
     </>
   );
 }

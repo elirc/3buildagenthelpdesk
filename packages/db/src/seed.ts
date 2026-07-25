@@ -15,6 +15,9 @@ async function reset() {
   await prisma.backgroundJob.deleteMany();
   await prisma.structuredLog.deleteMany();
   await prisma.ticketComment.deleteMany();
+  // After ticketComment: comments carry a nullable cannedReplyId, so the
+  // templates cannot go first without tripping the foreign key.
+  await prisma.cannedReply.deleteMany();
   await prisma.ticket.deleteMany();
   await prisma.incident.deleteMany();
   await prisma.user.deleteMany();
@@ -299,6 +302,42 @@ async function main() {
         body: "Need export id and approximate report filters to reproduce.",
         isInternal: true,
         createdAt: hoursAgo(4)
+      }
+    ]
+  });
+
+  // Three templates covering the shapes that matter: one scoped to a
+  // category, one that applies everywhere, and one already retired so the
+  // active/inactive distinction is visible without clicking anything.
+  await prisma.cannedReply.createMany({
+    data: [
+      {
+        organizationId: primaryOrg.id,
+        title: "Acknowledge and request reproduction steps",
+        body:
+          "Hi {{customerName}},\n\nThanks for reporting \"{{ticketTitle}}\". We are looking into it now.\n\nTo help us reproduce it, could you send the approximate time it started, the account or workspace affected, and a screenshot if you have one?\n\nWe will update you by {{slaDueAt}}.\n\n{{agentName}}",
+        category: "BUG",
+        createdById: manager.id,
+        usageCount: 4
+      },
+      {
+        organizationId: primaryOrg.id,
+        title: "Incident acknowledgement",
+        body:
+          "Hi {{customerName}},\n\nWe are aware of the issue affecting your service and engineering is actively investigating. Your ticket {{ticketId}} is linked to the incident and we will update you by {{slaDueAt}}.\n\n{{agentName}}",
+        category: null,
+        createdById: manager.id,
+        usageCount: 7
+      },
+      {
+        organizationId: primaryOrg.id,
+        title: "Legacy billing apology (retired)",
+        body:
+          "Hi {{customerName}}, we are sorry about the invoice discrepancy and have escalated it to our billing team.",
+        category: "BILLING",
+        isActive: false,
+        createdById: admin.id,
+        usageCount: 12
       }
     ]
   });
