@@ -130,6 +130,8 @@ model Organization {
   apiKeys     ApiKey[]
   logAlertRules LogAlertRule[]
   knowledgeArticles KnowledgeArticle[]
+  watches       Watch[]
+  notifications Notification[]
   createdAt   DateTime        @default(now())
   updatedAt   DateTime        @updatedAt
 }
@@ -155,6 +157,8 @@ model User {
   apiKeys         ApiKey[]        @relation("ApiKeys")
   articles        KnowledgeArticle[] @relation("AuthoredArticles")
   articleLinks    TicketArticleLink[] @relation("ArticleLinks")
+  watches         Watch[]         @relation("Watches")
+  notifications   Notification[]  @relation("Notifications")
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
 
@@ -298,6 +302,49 @@ model BusinessCalendar {
   workdays           Int[]        @default([1, 2, 3, 4, 5])
   holidays           DateTime[]   @default([])
   updatedAt          DateTime     @updatedAt
+}
+
+enum NotificationKind {
+  TICKET_STATUS_CHANGED
+  TICKET_COMMENT_ADDED
+  TICKET_ASSIGNED
+  INCIDENT_STATUS_CHANGED
+}
+
+/// An explicit subscription to an entity's changes.
+///
+/// entityType/entityId rather than two nullable foreign keys, because the
+/// set of watchable things will grow and a column per type does not.
+model Watch {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  userId         String
+  user           User         @relation("Watches", fields: [userId], references: [id])
+  entityType     String
+  entityId       String
+  createdAt      DateTime     @default(now())
+
+  @@unique([userId, entityType, entityId])
+  @@index([organizationId, entityType, entityId])
+}
+
+model Notification {
+  id               String           @id @default(cuid())
+  organizationId   String
+  organization     Organization     @relation(fields: [organizationId], references: [id])
+  recipientId      String
+  recipient        User             @relation("Notifications", fields: [recipientId], references: [id])
+  kind             NotificationKind
+  entityType       String
+  entityId         String
+  title            String
+  body             String
+  readAt           DateTime?
+  requestContextId String?
+  createdAt        DateTime         @default(now())
+
+  @@index([recipientId, readAt, createdAt])
 }
 
 enum ArticleStatus {
