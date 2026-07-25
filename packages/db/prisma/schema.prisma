@@ -121,6 +121,7 @@ model Organization {
   agentRuns   AgentRun[]
   auditEvents AuditEvent[]
   cannedReplies CannedReply[]
+  ticketLinks TicketLink[]
   createdAt   DateTime        @default(now())
   updatedAt   DateTime        @updatedAt
 }
@@ -140,6 +141,7 @@ model User {
   auditEvents     AuditEvent[]
   agentRuns       AgentRun[]
   cannedReplies   CannedReply[]   @relation("CannedReplies")
+  ticketLinks     TicketLink[]    @relation("TicketLinks")
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
 
@@ -195,6 +197,8 @@ model Ticket {
   comments       TicketComment[]
   logs           StructuredLog[]
   jobs           BackgroundJob[]
+  linksOut       TicketLink[]    @relation("LinkSource")
+  linksIn        TicketLink[]    @relation("LinkTarget")
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
 
@@ -217,6 +221,39 @@ model TicketComment {
   cannedReplyId String?
   cannedReply   CannedReply? @relation(fields: [cannedReplyId], references: [id])
   createdAt  DateTime @default(now())
+}
+
+enum TicketLinkType {
+  DUPLICATE_OF
+  RELATED_TO
+  BLOCKS
+  CAUSED_BY
+}
+
+/// A directed relationship between two tickets in the same organization.
+///
+/// Stored once, read from both ends: the ticket page shows outgoing links
+/// with their own wording and incoming links with the inverse wording. Two
+/// rows per relationship would double the write path and let the two halves
+/// drift out of sync.
+model TicketLink {
+  id             String         @id @default(cuid())
+  organizationId String
+  organization   Organization   @relation(fields: [organizationId], references: [id])
+  sourceTicketId String
+  sourceTicket   Ticket         @relation("LinkSource", fields: [sourceTicketId], references: [id], onDelete: Cascade)
+  targetTicketId String
+  targetTicket   Ticket         @relation("LinkTarget", fields: [targetTicketId], references: [id], onDelete: Cascade)
+  linkType       TicketLinkType
+  note           String?
+  createdById    String?
+  createdBy      User?          @relation("TicketLinks", fields: [createdById], references: [id])
+  createdAt      DateTime       @default(now())
+
+  // Guards the exact duplicate. The reverse-direction and self-link rules
+  // are not expressible as constraints and live in validateTicketLink.
+  @@unique([sourceTicketId, targetTicketId, linkType])
+  @@index([organizationId, targetTicketId])
 }
 
 model CannedReply {

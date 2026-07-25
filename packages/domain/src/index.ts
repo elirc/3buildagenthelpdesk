@@ -3,4 +3,5 @@ export * from "./incidents";
 export * from "./jobs";
 export * from "./logs";
 export * from "./permissions";
+export * from "./ticket-links";
 export * from "./tickets";

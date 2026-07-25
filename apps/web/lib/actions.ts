@@ -15,8 +15,12 @@ import {
   createIncidentSchema,
   createTicketSchema,
   extractVariables,
+  linkedTicketIds,
   normalizeTags,
   requireCapability,
+  validateTicketLink,
+  TICKET_LINK_TYPES,
+  type TicketLinkType,
   type Capability
 } from "@agentdesk/domain";
 import type { AgentTargetType, AgentType } from "@agentdesk/shared";
@@ -766,4 +770,96 @@ export async function deactivateCannedReplyAction(formData: FormData) {
   });
 
   revalidatePath("/settings");
+}
+
+/* -------------------------------------------------------------------------
+ * Ticket links
+ * ---------------------------------------------------------------------- */
+
+export async function linkTicketsAction(formData: FormData) {
+  const { user, requestContext } = await requireActionUser("ticket.link", "ticket:update");
+
+  const sourceTicketId = stringValue(formData, "sourceTicketId");
+  const targetTicketId = stringValue(formData, "targetTicketId");
+  const linkType = stringValue(formData, "linkType") as TicketLinkType;
+
+  if (!TICKET_LINK_TYPES.includes(linkType)) {
+    throw new ActionError("Unknown link type.");
+  }
+
+  // Both ends must be inside the caller's organization. Checking only the
+  // source would let someone paste another tenant's ticket id into the
+  // target field and confirm it exists by whether the link succeeded.
+  const [source, target] = await Promise.all([
+    prisma.ticket.findFirst({ where: { id: sourceTicketId, organizationId: user.organizationId } }),
+    prisma.ticket.findFirst({ where: { id: targetTicketId, organizationId: user.organizationId } })
+  ]);
+  assertCanAccessRecord(user, source, "Ticket");
+  assertCanAccessRecord(user, target, "Linked ticket");
+
+  const existingLinks = await prisma.ticketLink.findMany({
+    where: {
+      organizationId: user.organizationId,
+      OR: [
+        { sourceTicketId, targetTicketId },
+        { sourceTicketId: targetTicketId, targetTicketId: sourceTicketId }
+      ]
+    },
+    select: { sourceTicketId: true, targetTicketId: true, linkType: true }
+  });
+
+  const validation = validateTicketLink({ sourceTicketId, targetTicketId, linkType, existingLinks });
+  if (!validation.ok) {
+    throw new ActionError(validation.reason);
+  }
+
+  const link = await prisma.ticketLink.create({
+    data: {
+      organizationId: user.organizationId,
+      sourceTicketId,
+      targetTicketId,
+      linkType,
+      note: optionalStringValue(formData, "note"),
+      createdById: user.id
+    }
+  });
+
+  await writeAuditEvent({
+    organizationId: user.organizationId,
+    actorUserId: user.id,
+    action: "ticket.linked",
+    entityType: "Ticket",
+    entityId: sourceTicketId,
+    after: { linkId: link.id, linkType, targetTicketId },
+    metadata: { actorRole: user.role },
+    requestContextId: requestContext.requestContextId
+  });
+
+  // Both pages change, because the link is visible from either end.
+  revalidatePath(`/tickets/${sourceTicketId}`);
+  revalidatePath(`/tickets/${targetTicketId}`);
+}
+
+export async function unlinkTicketsAction(formData: FormData) {
+  const { user, requestContext } = await requireActionUser("ticket.unlink", "ticket:update");
+
+  const linkId = stringValue(formData, "linkId");
+  const link = await prisma.ticketLink.findFirst({ where: { id: linkId, organizationId: user.organizationId } });
+  assertCanAccessRecord(user, link, "Ticket link");
+
+  await prisma.ticketLink.delete({ where: { id: linkId } });
+
+  await writeAuditEvent({
+    organizationId: user.organizationId,
+    actorUserId: user.id,
+    action: "ticket.unlinked",
+    entityType: "Ticket",
+    entityId: link.sourceTicketId,
+    before: { linkId, linkType: link.linkType, targetTicketId: link.targetTicketId },
+    metadata: { actorRole: user.role },
+    requestContextId: requestContext.requestContextId
+  });
+
+  revalidatePath(`/tickets/${link.sourceTicketId}`);
+  revalidatePath(`/tickets/${link.targetTicketId}`);
 }
