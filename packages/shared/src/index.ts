@@ -54,7 +54,8 @@ export type JobStatus = (typeof JOB_STATUSES)[number];
 export const AGENT_TYPES = [
   "TICKET_SUMMARIZATION",
   "LOG_ANOMALY_DETECTION",
-  "FAILED_JOB_INVESTIGATION"
+  "FAILED_JOB_INVESTIGATION",
+  "DUPLICATE_DETECTION"
 ] as const;
 export type AgentType = (typeof AGENT_TYPES)[number];
 
@@ -123,7 +124,8 @@ export const labelMaps = {
   agentType: {
     TICKET_SUMMARIZATION: "Ticket Summarization",
     LOG_ANOMALY_DETECTION: "Log Anomaly Detection",
-    FAILED_JOB_INVESTIGATION: "Failed Job Investigation"
+    FAILED_JOB_INVESTIGATION: "Failed Job Investigation",
+    DUPLICATE_DETECTION: "Duplicate Detection"
   }
 } as const;
 
