@@ -5,7 +5,26 @@ Two documents written for a junior software engineer who is about to work on thi
 | File | What it is for |
 | --- | --- |
 | [01-how-this-app-works.md](01-how-this-app-works.md) | Read first. Explains what the product does, how the code is arranged, how a request flows end to end, and the traps in the current implementation. |
-| [02-feature-backlog-user-stories.md](02-feature-backlog-user-stories.md) | 20 new-feature user stories with acceptance criteria, schema changes, files to touch, and test requirements. Implement these one at a time. |
+| [02-feature-backlog-user-stories.md](02-feature-backlog-user-stories.md) | 20 new-feature user stories with acceptance criteria, schema changes, files to touch, and test requirements. **All 20 are now implemented** — see the status table below. |
+
+## Status: all 20 stories shipped
+
+Every story in document 02 was implemented on its own branch and merged through a reviewed pull request. The PRs are the real artefact: each one carries its acceptance criteria ticked honestly, the verification actually performed, and a risks section naming what was left undone.
+
+| Epic | Stories | PRs |
+| --- | --- | --- |
+| A — Queue productivity | A1, A2, A3, A4, A5 | #3, #10, #8, #5, #22 |
+| B — Relationships | B1, B2, B3 | #6, #16, #9 |
+| C — SLA & routing | C1, C2, C3, C4 | #4, #15, #18, #11 |
+| D — Job pipeline | D1, D2, D3 | #12, #7, #13 |
+| E — Agents & knowledge | E1, E2, E3 | #14, #20, #21 |
+| F — Analytics & API | F1, F2 | #17, #19 |
+
+Plus #1 (CI, PR template, CONTRIBUTING) and #2 (a dedicated Postgres port).
+
+Test count went from **12 to 288**. Every PR passed CI before merge.
+
+Reading the PRs in merge order is the intended way to use this repository: the reasoning behind each decision is in the commit bodies and PR descriptions, not just in the diff.
 
 ## How these differ from `docs/`
 
