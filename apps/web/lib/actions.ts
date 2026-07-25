@@ -180,6 +180,19 @@ export async function createTicketAction(formData: FormData) {
   ]);
 
   const createdAt = new Date();
+  // One row per organization, absent for most. Absent means elapsed-hours
+  // SLA, which is the behaviour every organization had before this feature.
+  const calendarRow = await prisma.businessCalendar.findUnique({ where: { organizationId: user.organizationId } });
+  const calendar = calendarRow
+    ? {
+        timezone: calendarRow.timezone,
+        workdayStartMinute: calendarRow.workdayStartMinute,
+        workdayEndMinute: calendarRow.workdayEndMinute,
+        workdays: calendarRow.workdays,
+        holidays: calendarRow.holidays
+      }
+    : undefined;
+
   const ticketData: Prisma.TicketUncheckedCreateInput = {
     organizationId: user.organizationId,
     title: parsed.title,
@@ -193,8 +206,8 @@ export async function createTicketAction(formData: FormData) {
     incidentId: parsed.incidentId,
     tags: parsed.tags,
     status: "NEW",
-    slaDueAt: calculateSlaDueAt(parsed.priority, createdAt),
-    firstResponseDueAt: calculateFirstResponseDueAt(parsed.priority, createdAt),
+    slaDueAt: calculateSlaDueAt(parsed.priority, createdAt, calendar),
+    firstResponseDueAt: calculateFirstResponseDueAt(parsed.priority, createdAt, calendar),
     createdAt
   };
   const ticket = await prisma.ticket.create({ data: ticketData });
@@ -1354,4 +1367,73 @@ export async function replayAgentRunAction(formData: FormData) {
 
   revalidatePath(`/agents/${original.id}`);
   redirect(`/agents/${original.id}`);
+}
+
+/* -------------------------------------------------------------------------
+ * Business calendar
+ * ---------------------------------------------------------------------- */
+
+export async function updateBusinessCalendarAction(formData: FormData) {
+  const { user, requestContext } = await requireActionUser("calendar.update", "canned_reply:manage");
+
+  const parseMinute = (key: string, fallback: number) => {
+    // <input type="time"> submits "HH:MM".
+    const raw = stringValue(formData, key);
+    const [hours, minutes] = raw.split(":").map((part) => Number.parseInt(part, 10));
+    if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return fallback;
+    return Math.min(Math.max(hours * 60 + minutes, 0), 24 * 60);
+  };
+
+  const workdayStartMinute = parseMinute("workdayStart", 9 * 60);
+  const workdayEndMinute = parseMinute("workdayEnd", 17 * 60);
+  if (workdayEndMinute <= workdayStartMinute) {
+    // A zero-length or inverted day makes every deadline unreachable.
+    throw new ActionError("The workday must end after it starts.");
+  }
+
+  const workdays = formData
+    .getAll("workdays")
+    .map((value) => Number.parseInt(String(value), 10))
+    .filter((day) => Number.isFinite(day) && day >= 0 && day <= 6);
+  if (workdays.length === 0) {
+    throw new ActionError("Select at least one working day.");
+  }
+
+  const holidays = stringValue(formData, "holidays")
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => new Date(`${part}T00:00:00.000Z`))
+    .filter((date) => !Number.isNaN(date.getTime()));
+
+  const data = {
+    timezone: stringValue(formData, "timezone") || "UTC",
+    workdayStartMinute,
+    workdayEndMinute,
+    workdays,
+    holidays
+  };
+
+  const before = await prisma.businessCalendar.findUnique({ where: { organizationId: user.organizationId } });
+  const after = await prisma.businessCalendar.upsert({
+    where: { organizationId: user.organizationId },
+    create: { organizationId: user.organizationId, ...data },
+    update: data
+  });
+
+  await writeAuditEvent({
+    organizationId: user.organizationId,
+    actorUserId: user.id,
+    action: "calendar.updated",
+    entityType: "BusinessCalendar",
+    entityId: after.id,
+    before: before
+      ? { workdayStartMinute: before.workdayStartMinute, workdayEndMinute: before.workdayEndMinute, workdays: before.workdays }
+      : null,
+    after: { workdayStartMinute: after.workdayStartMinute, workdayEndMinute: after.workdayEndMinute, workdays: after.workdays },
+    metadata: { actorRole: user.role, holidayCount: after.holidays.length },
+    requestContextId: requestContext.requestContextId
+  });
+
+  revalidatePath("/settings");
 }

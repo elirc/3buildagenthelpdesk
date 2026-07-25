@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { addBusinessHours, usesBusinessHours, type BusinessCalendarConfig } from "./business-hours";
 import {
   TICKET_CATEGORIES,
   TICKET_PRIORITIES,
@@ -61,8 +62,26 @@ const slaHoursByPriority: Record<TicketPriority, number> = {
   CRITICAL: 2
 };
 
-export function calculateSlaDueAt(priority: TicketPriority, createdAt = new Date()): Date {
-  return hoursFromNow(slaHoursByPriority[priority], createdAt);
+/**
+ * The resolution deadline for a ticket.
+ *
+ * With no calendar this is elapsed hours, exactly as before — which is what
+ * keeps every existing call site and every existing row correct.
+ *
+ * With a calendar, non-CRITICAL tickets count only working hours, so a LOW
+ * ticket raised on Friday evening is not already two days late by Monday.
+ * CRITICAL is always elapsed: an outage does not wait for Monday.
+ */
+export function calculateSlaDueAt(
+  priority: TicketPriority,
+  createdAt = new Date(),
+  calendar?: BusinessCalendarConfig
+): Date {
+  const hours = slaHoursByPriority[priority];
+  if (calendar && usesBusinessHours(priority)) {
+    return addBusinessHours(createdAt, hours, calendar);
+  }
+  return hoursFromNow(hours, createdAt);
 }
 
 /* -------------------------------------------------------------------------
@@ -201,8 +220,18 @@ const firstResponseHoursByPriority: Record<TicketPriority, number> = {
   LOW: 24
 };
 
-export function calculateFirstResponseDueAt(priority: TicketPriority, createdAt = new Date()): Date {
-  return hoursFromNow(firstResponseHoursByPriority[priority], createdAt);
+export function calculateFirstResponseDueAt(
+  priority: TicketPriority,
+  createdAt = new Date(),
+  calendar?: BusinessCalendarConfig
+): Date {
+  const hours = firstResponseHoursByPriority[priority];
+  // The response clock follows the same rule as resolution: an unattended
+  // Friday night must not consume a LOW ticket's whole response budget.
+  if (calendar && usesBusinessHours(priority)) {
+    return addBusinessHours(createdAt, hours, calendar);
+  }
+  return hoursFromNow(hours, createdAt);
 }
 
 /**

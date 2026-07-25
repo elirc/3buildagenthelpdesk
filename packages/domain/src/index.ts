@@ -1,3 +1,4 @@
+export * from "./business-hours";
 export * from "./canned-replies";
 export * from "./incidents";
 export * from "./jobs";

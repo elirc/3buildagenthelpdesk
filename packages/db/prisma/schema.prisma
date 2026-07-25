@@ -124,6 +124,7 @@ model Organization {
   cannedReplies CannedReply[]
   ticketLinks TicketLink[]
   savedViews  SavedView[]
+  businessCalendar BusinessCalendar?
   createdAt   DateTime        @default(now())
   updatedAt   DateTime        @updatedAt
 }
@@ -264,6 +265,22 @@ model SavedView {
 
   @@unique([ownerId, resource, name])
   @@index([organizationId, resource])
+}
+
+/// Working hours for an organization, used to decide when the SLA clock
+/// is allowed to run. One row per organization, hence the @unique.
+model BusinessCalendar {
+  id                 String       @id @default(cuid())
+  organizationId     String       @unique
+  organization       Organization @relation(fields: [organizationId], references: [id])
+  timezone           String       @default("UTC")
+  // Minutes past midnight. 540 = 09:00, 1020 = 17:00.
+  workdayStartMinute Int          @default(540)
+  workdayEndMinute   Int          @default(1020)
+  // 0 = Sunday, matching JavaScript's getUTCDay().
+  workdays           Int[]        @default([1, 2, 3, 4, 5])
+  holidays           DateTime[]   @default([])
+  updatedAt          DateTime     @updatedAt
 }
 
 enum TicketLinkType {

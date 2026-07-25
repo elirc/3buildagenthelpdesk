@@ -35,6 +35,7 @@ export type AuditAction =
   | "canned_reply.created"
   | "canned_reply.updated"
   | "canned_reply.deactivated"
+  | "calendar.updated"
   | "ticket.linked"
   | "ticket.unlinked"
   | "view.created"
