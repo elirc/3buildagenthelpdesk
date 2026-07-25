@@ -16,6 +16,8 @@ import {
   createTicketSchema,
   extractVariables,
   linkedTicketIds,
+  MAX_BULK_TICKETS,
+  planBulkStatusChange,
   normalizeTags,
   requireCapability,
   validateTicketLink,
@@ -23,7 +25,7 @@ import {
   type TicketLinkType,
   type Capability
 } from "@agentdesk/domain";
-import type { AgentTargetType, AgentType } from "@agentdesk/shared";
+import type { AgentTargetType, AgentType, TicketPriority, TicketStatus } from "@agentdesk/shared";
 import { assertCanAccessRecord } from "./access";
 import { writeAuditEvent } from "./audit";
 import { getCurrentUser, isDemoAuthEnabled, requireCurrentUser } from "./auth";
@@ -862,4 +864,117 @@ export async function unlinkTicketsAction(formData: FormData) {
 
   revalidatePath(`/tickets/${link.sourceTicketId}`);
   revalidatePath(`/tickets/${link.targetTicketId}`);
+}
+
+/* -------------------------------------------------------------------------
+ * Bulk triage
+ * ---------------------------------------------------------------------- */
+
+export async function bulkUpdateTicketsAction(formData: FormData) {
+  const { user, requestContext } = await requireActionUser("ticket.bulk_update", "ticket:update");
+
+  const ticketIds = formData.getAll("ticketIds").map((value) => String(value)).filter(Boolean);
+  if (ticketIds.length === 0) {
+    // Submitting an empty selection is a mis-click, not an error worth an
+    // error page.
+    return;
+  }
+  if (ticketIds.length > MAX_BULK_TICKETS) {
+    throw new ActionError(`Select at most ${MAX_BULK_TICKETS} tickets at once.`);
+  }
+
+  const nextStatus = optionalStringValue(formData, "status") as TicketStatus | null;
+  const assignedUserId = optionalStringValue(formData, "assignedUserId");
+  const nextPriority = optionalStringValue(formData, "priority") as TicketPriority | null;
+  if (!nextStatus && !assignedUserId && !nextPriority) {
+    throw new ActionError("Choose a status, assignee, or priority to apply.");
+  }
+  if (assignedUserId) {
+    await assertScopedUser(user, assignedUserId);
+  }
+
+  // Scoped read. Ids that belong to another organization simply do not come
+  // back, so a hand-edited form silently affects nothing rather than
+  // reporting whether those ids exist.
+  const tickets = await prisma.ticket.findMany({
+    where: { id: { in: ticketIds }, organizationId: user.organizationId },
+    select: { id: true, status: true, priority: true, assignedUserId: true, createdAt: true, slaPausedAt: true, slaPausedTotalMs: true }
+  });
+
+  const plan = nextStatus
+    ? planBulkStatusChange(tickets, nextStatus)
+    : { applied: tickets.map((ticket) => ticket.id), rejected: [] as Array<{ ticketId: string; reason: string }> };
+
+  const byId = new Map(tickets.map((ticket) => [ticket.id, ticket]));
+
+  // Best-effort, one row at a time, rather than a single updateMany. Two
+  // reasons: each ticket needs its own SLA pause bookkeeping, and the audit
+  // trail has to stay queryable by entityId — a batch-level event would be
+  // invisible when someone asks "what happened to this ticket".
+  for (const ticketId of plan.applied) {
+    const before = byId.get(ticketId);
+    if (!before) continue;
+
+    const slaPause = nextStatus
+      ? applySlaPauseTransition({
+          from: before.status,
+          to: nextStatus,
+          slaPausedAt: before.slaPausedAt,
+          slaPausedTotalMs: before.slaPausedTotalMs
+        })
+      : { slaPausedAt: before.slaPausedAt, slaPausedTotalMs: before.slaPausedTotalMs };
+
+    const after = await prisma.ticket.update({
+      where: { id: ticketId },
+      data: {
+        status: nextStatus ?? undefined,
+        priority: nextPriority ?? undefined,
+        assignedUserId: assignedUserId ?? undefined,
+        slaPausedAt: slaPause.slaPausedAt,
+        slaPausedTotalMs: slaPause.slaPausedTotalMs,
+        resolvedAt:
+          nextStatus === "RESOLVED" || nextStatus === "CLOSED"
+            ? new Date()
+            : nextStatus
+              ? null
+              : undefined,
+        slaDueAt: nextPriority && nextPriority !== before.priority ? calculateSlaDueAt(nextPriority, before.createdAt) : undefined
+      }
+    });
+
+    await writeAuditEvent({
+      organizationId: user.organizationId,
+      actorUserId: user.id,
+      action: nextStatus && nextStatus !== before.status ? "ticket.status_changed" : "ticket.updated",
+      entityType: "Ticket",
+      entityId: ticketId,
+      before: { status: before.status, priority: before.priority, assignedUserId: before.assignedUserId },
+      after: { status: after.status, priority: after.priority, assignedUserId: after.assignedUserId },
+      // The shared requestContextId is what ties these events back together
+      // as one operator action despite being separate rows.
+      metadata: { actorRole: user.role, bulk: true, batchSize: plan.applied.length },
+      requestContextId: requestContext.requestContextId
+    });
+  }
+
+  logOperationalEvent({
+    event: "ticket.bulk_update.completed",
+    requestContextId: requestContext.requestContextId,
+    organizationId: user.organizationId,
+    applied: plan.applied.length,
+    rejected: plan.rejected.length
+  });
+
+  revalidatePath("/tickets");
+
+  // The outcome is reported by redirecting with a summary in the query
+  // string. Server actions cannot return a value to a plain HTML form, and
+  // silently applying 14 of 16 changes would be worse than saying so.
+  const params = new URLSearchParams();
+  params.set("applied", String(plan.applied.length));
+  if (plan.rejected.length > 0) {
+    params.set("skipped", String(plan.rejected.length));
+    params.set("skippedReason", plan.rejected[0].reason);
+  }
+  redirect(`/tickets?${params.toString()}`);
 }
