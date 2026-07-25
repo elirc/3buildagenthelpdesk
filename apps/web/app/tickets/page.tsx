@@ -28,6 +28,7 @@ type TicketsSearchParams = {
   pageSize?: string;
   sort?: string;
   direction?: string;
+  showMerged?: string;
   applied?: string;
   skipped?: string;
   skippedReason?: string;
@@ -38,8 +39,13 @@ export default async function TicketsPage({ searchParams }: { searchParams: Tick
   const pagination = parsePagination(searchParams);
   const sort = parseSort<TicketSortKey>(searchParams.sort, searchParams.direction, TICKET_SORT_KEYS, DEFAULT_TICKET_SORT);
 
+  // Merged tickets are closed duplicates. They stay reachable by link and
+  // by toggle, but they are noise in a working queue.
+  const showMerged = searchParams.showMerged === "1";
+
   const where: Prisma.TicketWhereInput = {
     organizationId: currentUser.organizationId,
+    ...(showMerged ? {} : { mergedIntoId: null }),
     status: searchParams.status ? (searchParams.status as never) : undefined,
     priority: searchParams.priority ? (searchParams.priority as never) : undefined,
     OR: searchParams.q
@@ -174,6 +180,9 @@ export default async function TicketsPage({ searchParams }: { searchParams: Tick
           <input type="hidden" name="sort" value={sort.key} />
           <input type="hidden" name="direction" value={sort.direction} />
           <Button type="submit">Apply</Button>
+          <Button href={showMerged ? "/tickets" : "/tickets?showMerged=1"}>
+            {showMerged ? "Hide merged" : "Show merged"}
+          </Button>
         </form>
 
         {searchParams.applied ? (

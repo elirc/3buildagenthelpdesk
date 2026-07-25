@@ -12,7 +12,7 @@ import {
   TICKET_LINK_TYPES
 } from "@agentdesk/domain";
 import { labelMaps, TICKET_CATEGORIES, TICKET_PRIORITIES } from "@agentdesk/shared";
-import { addTicketCommentAction, linkTicketsAction, runDuplicateDetectionAction, runTicketAgentAction, unlinkTicketsAction, updateTicketAction } from "../../../lib/actions";
+import { addTicketCommentAction, linkTicketsAction, mergeTicketsAction, runDuplicateDetectionAction, runTicketAgentAction, unlinkTicketsAction, updateTicketAction } from "../../../lib/actions";
 import { firstResponseTone, formatDateTime, formatDuration, priorityTone, slaTone, ticketStatusTone } from "../../../lib/format";
 import { requireCurrentUser } from "../../../lib/auth";
 
@@ -34,6 +34,8 @@ export default async function TicketDetailPage({
         assignedTeam: true,
         assignedUser: true,
         incident: true,
+        mergedInto: true,
+        mergedFrom: true,
         comments: { include: { author: true }, orderBy: { createdAt: "asc" } },
         logs: { orderBy: { timestamp: "desc" }, take: 8 },
         jobs: { orderBy: { createdAt: "desc" }, take: 8 }
@@ -170,6 +172,31 @@ export default async function TicketDetailPage({
         </div>
       </PageHeader>
 
+      {ticket.mergedIntoId ? (
+        <Card>
+          <p className="text-danger">
+            This ticket was merged into{" "}
+            <a href={`/tickets/${ticket.mergedIntoId}`}>{ticket.mergedInto?.title ?? "another ticket"}</a> on{" "}
+            {formatDateTime(ticket.mergedAt)}. It is kept as the record of what the customer reported; work continues
+            on the surviving ticket.
+          </p>
+        </Card>
+      ) : null}
+
+      {ticket.mergedFrom.length > 0 ? (
+        <Card>
+          <p className="muted">
+            {ticket.mergedFrom.length} ticket(s) merged into this one:{" "}
+            {ticket.mergedFrom.map((merged, index) => (
+              <span key={merged.id}>
+                {index > 0 ? ", " : ""}
+                <a href={`/tickets/${merged.id}`}>{merged.title}</a>
+              </span>
+            ))}
+          </p>
+        </Card>
+      ) : null}
+
       <div className="detail-grid">
         <div className="grid">
           <Card title="Ticket Details">
@@ -288,7 +315,9 @@ export default async function TicketDetailPage({
                   </Select>
                 </Field>
               </div>
-              <Button type="submit" variant="primary" disabled={!writable}>Save Changes</Button>
+              <Button type="submit" variant="primary" disabled={!writable || Boolean(ticket.mergedIntoId)}>
+                Save Changes
+              </Button>
             </form>
           </Card>
 
@@ -448,6 +477,25 @@ export default async function TicketDetailPage({
                   <TextInput name="note" placeholder="Optional context" />
                 </Field>
                 <Button type="submit">Link Ticket</Button>
+              </form>
+            ) : null}
+
+            {writable && !ticket.mergedIntoId && linkCandidates.length > 0 ? (
+              <form action={mergeTicketsAction} className="form-grid" style={{ marginTop: 12 }}>
+                <input type="hidden" name="sourceTicketId" value={ticket.id} />
+                <Field
+                  label="Merge this ticket into"
+                  hint="Moves comments, logs and jobs to the survivor and closes this one. This cannot be undone."
+                >
+                  <Select name="targetTicketId" required>
+                    {linkCandidates.map((candidate) => (
+                      <option key={candidate.id} value={candidate.id}>
+                        {candidate.title}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                <Button type="submit" variant="danger">Merge Ticket</Button>
               </form>
             ) : null}
           </Card>

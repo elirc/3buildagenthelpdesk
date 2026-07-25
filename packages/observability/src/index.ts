@@ -38,6 +38,8 @@ export type AuditAction =
   | "calendar.updated"
   | "ticket.linked"
   | "ticket.unlinked"
+  | "ticket.merged"
+  | "ticket.merge_received"
   | "view.created"
   | "view.deleted"
   | "view.shared"

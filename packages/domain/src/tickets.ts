@@ -313,6 +313,43 @@ export function canResolveTickets(role: UserRole): boolean {
 }
 
 /* -------------------------------------------------------------------------
+ * Merging duplicates
+ *
+ * Merging is not deletion. The source ticket keeps existing, keeps its
+ * history, and gains a pointer to the survivor — it is the record of what
+ * a customer actually reported, and deleting it would erase that.
+ * ---------------------------------------------------------------------- */
+
+export type MergeCheck = { ok: true } | { ok: false; reason: string };
+
+export function canMergeTickets(params: {
+  source: { id: string; status: TicketStatus; mergedIntoId?: string | null };
+  target: { id: string; status: TicketStatus; mergedIntoId?: string | null };
+}): MergeCheck {
+  if (params.source.id === params.target.id) {
+    return { ok: false, reason: "A ticket cannot be merged into itself." };
+  }
+  if (params.source.mergedIntoId) {
+    return { ok: false, reason: "This ticket has already been merged." };
+  }
+  // No chains. If B has itself been merged into C, merging A into B leaves
+  // A pointing at a ticket nobody is working, and every consumer would have
+  // to walk the chain to find the live one. Merge into the survivor.
+  if (params.target.mergedIntoId) {
+    return { ok: false, reason: "The target ticket has itself been merged; merge into the surviving ticket instead." };
+  }
+  if (params.target.status === "CLOSED") {
+    return { ok: false, reason: "Cannot merge into a closed ticket." };
+  }
+  return { ok: true };
+}
+
+/** Union of two tag lists, normalised and de-duplicated. */
+export function mergeTags(a: string[], b: string[]): string[] {
+  return Array.from(new Set([...a, ...b].map((tag) => tag.trim().toLowerCase()).filter(Boolean)));
+}
+
+/* -------------------------------------------------------------------------
  * Bulk triage
  *
  * A morning triage pass touches twenty tickets. Some of them will refuse
