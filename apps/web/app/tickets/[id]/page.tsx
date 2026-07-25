@@ -4,11 +4,15 @@ import { prisma } from "@agentdesk/db";
 import {
   allowedTicketTransitions,
   canMutateTickets,
+  inverseTicketLinkLabel,
+  linkedTicketIds,
   renderCannedReply,
-  selectRepliesForTicket
+  selectRepliesForTicket,
+  ticketLinkLabel,
+  TICKET_LINK_TYPES
 } from "@agentdesk/domain";
 import { labelMaps, TICKET_CATEGORIES, TICKET_PRIORITIES } from "@agentdesk/shared";
-import { addTicketCommentAction, runTicketAgentAction, updateTicketAction } from "../../../lib/actions";
+import { addTicketCommentAction, linkTicketsAction, runTicketAgentAction, unlinkTicketsAction, updateTicketAction } from "../../../lib/actions";
 import { formatDateTime, formatDuration, priorityTone, slaTone, ticketStatusTone } from "../../../lib/format";
 import { requireCurrentUser } from "../../../lib/auth";
 
@@ -22,7 +26,8 @@ export default async function TicketDetailPage({
   searchParams: { replyId?: string };
 }) {
   const currentUser = await requireCurrentUser();
-  const [ticket, teams, users, incidents, agentRuns, auditEvents, cannedReplies] = await Promise.all([
+  const [ticket, teams, users, incidents, agentRuns, auditEvents, cannedReplies, ticketLinks, linkableTickets] =
+    await Promise.all([
     prisma.ticket.findFirst({
       where: { id: params.id, organizationId: currentUser.organizationId },
       include: {
@@ -52,6 +57,22 @@ export default async function TicketDetailPage({
     prisma.cannedReply.findMany({
       where: { organizationId: currentUser.organizationId, isActive: true },
       orderBy: { title: "asc" }
+    }),
+    // Both directions in one query. The link is stored once; which side you
+    // are on decides the wording, not whether you see it.
+    prisma.ticketLink.findMany({
+      where: {
+        organizationId: currentUser.organizationId,
+        OR: [{ sourceTicketId: params.id }, { targetTicketId: params.id }]
+      },
+      include: { sourceTicket: true, targetTicket: true },
+      orderBy: { createdAt: "desc" }
+    }),
+    prisma.ticket.findMany({
+      where: { organizationId: currentUser.organizationId, id: { not: params.id } },
+      orderBy: { updatedAt: "desc" },
+      take: 50,
+      select: { id: true, title: true, status: true }
     })
   ]);
 
@@ -74,6 +95,11 @@ export default async function TicketDetailPage({
   // the uncategorised ones. The filtering rule lives in the domain package so
   // it is testable without a database.
   const availableReplies = selectRepliesForTicket(cannedReplies, ticket.category);
+
+  // Already-linked tickets are removed from the picker, so every option
+  // offered is one the validator will accept.
+  const alreadyLinkedIds = new Set(linkedTicketIds(ticket.id, ticketLinks));
+  const linkCandidates = linkableTickets.filter((candidate) => !alreadyLinkedIds.has(candidate.id));
 
   // "Insert" is a GET that reloads this page with ?replyId=..., because the
   // app ships no client JavaScript. The chosen template is rendered into the
@@ -292,6 +318,68 @@ export default async function TicketDetailPage({
             ) : (
               <p className="muted">No agent run yet.</p>
             )}
+          </Card>
+
+          <Card title="Linked Tickets">
+            {ticketLinks.length === 0 ? (
+              <p className="muted">No linked tickets.</p>
+            ) : (
+              <DataTable>
+                <tbody>
+                  {ticketLinks.map((link) => {
+                    // The stored row is directional. If this ticket is the
+                    // source we show it as written; if it is the target we
+                    // show the inverse wording and point at the other end.
+                    const outgoing = link.sourceTicketId === ticket.id;
+                    const other = outgoing ? link.targetTicket : link.sourceTicket;
+                    const label = outgoing ? ticketLinkLabel(link.linkType) : inverseTicketLinkLabel(link.linkType);
+                    return (
+                      <tr key={link.id}>
+                        <td>
+                          <Badge tone="info">{label}</Badge>{" "}
+                          <a href={`/tickets/${other.id}`}>{other.title}</a>
+                          {link.note ? <div className="muted">{link.note}</div> : null}
+                        </td>
+                        <td>
+                          <form action={unlinkTicketsAction}>
+                            <input type="hidden" name="linkId" value={link.id} />
+                            <Button type="submit" disabled={!writable}>Unlink</Button>
+                          </form>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </DataTable>
+            )}
+
+            {writable && linkCandidates.length > 0 ? (
+              <form action={linkTicketsAction} className="form-grid" style={{ marginTop: 12 }}>
+                <input type="hidden" name="sourceTicketId" value={ticket.id} />
+                <Field label="Relationship">
+                  <Select name="linkType" defaultValue="RELATED_TO">
+                    {TICKET_LINK_TYPES.map((type) => (
+                      <option key={type} value={type}>
+                        {ticketLinkLabel(type)}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                <Field label="Ticket">
+                  <Select name="targetTicketId" required>
+                    {linkCandidates.map((candidate) => (
+                      <option key={candidate.id} value={candidate.id}>
+                        {candidate.title}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                <Field label="Note">
+                  <TextInput name="note" placeholder="Optional context" />
+                </Field>
+                <Button type="submit">Link Ticket</Button>
+              </form>
+            ) : null}
           </Card>
 
           <Card title="Linked Logs">
