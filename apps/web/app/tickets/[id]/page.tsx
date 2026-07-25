@@ -13,7 +13,7 @@ import {
   TICKET_LINK_TYPES
 } from "@agentdesk/domain";
 import { labelMaps, TICKET_CATEGORIES, TICKET_PRIORITIES } from "@agentdesk/shared";
-import { addTicketCommentAction, linkArticleToTicketAction, linkTicketsAction, mergeTicketsAction, rateArticleLinkAction, runDuplicateDetectionAction, runTicketAgentAction, unlinkTicketsAction, updateTicketAction } from "../../../lib/actions";
+import { addTicketCommentAction, linkArticleToTicketAction, linkTicketsAction, unwatchEntityAction, watchEntityAction, mergeTicketsAction, rateArticleLinkAction, runDuplicateDetectionAction, runTicketAgentAction, unlinkTicketsAction, updateTicketAction } from "../../../lib/actions";
 import { firstResponseTone, formatDateTime, formatDuration, priorityTone, slaTone, ticketStatusTone } from "../../../lib/format";
 import { requireCurrentUser } from "../../../lib/auth";
 
@@ -27,7 +27,7 @@ export default async function TicketDetailPage({
   searchParams: { replyId?: string };
 }) {
   const currentUser = await requireCurrentUser();
-  const [ticket, teams, users, incidents, agentRuns, auditEvents, cannedReplies, ticketLinks, linkableTickets, publishedArticles, duplicateRun] =
+  const [ticket, teams, users, incidents, agentRuns, auditEvents, cannedReplies, ticketLinks, linkableTickets, publishedArticles, existingWatch, duplicateRun] =
     await Promise.all([
     prisma.ticket.findFirst({
       where: { id: params.id, organizationId: currentUser.organizationId },
@@ -81,6 +81,10 @@ export default async function TicketDetailPage({
     prisma.knowledgeArticle.findMany({
       where: { organizationId: currentUser.organizationId, status: "PUBLISHED" },
       take: 200
+    }),
+    prisma.watch.findFirst({
+      where: { userId: currentUser.id, entityType: "Ticket", entityId: params.id },
+      select: { id: true }
     }),
     prisma.agentRun.findFirst({
       where: {
@@ -174,6 +178,11 @@ export default async function TicketDetailPage({
             <form action={runDuplicateDetectionAction}>
               <input type="hidden" name="ticketId" value={ticket.id} />
               <Button type="submit">Check for Duplicates</Button>
+            </form>
+            <form action={existingWatch ? unwatchEntityAction : watchEntityAction}>
+              <input type="hidden" name="entityType" value="Ticket" />
+              <input type="hidden" name="entityId" value={ticket.id} />
+              <Button type="submit">{existingWatch ? "Unwatch" : "Watch"}</Button>
             </form>
           </div>
         }

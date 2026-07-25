@@ -25,7 +25,10 @@ import {
   MAX_BULK_TICKETS,
   planBulkStatusChange,
   mergeTags,
+  NOTIFICATION_RULES,
+  describeNotification,
   normalizeTags,
+  resolveRecipients,
   qualifiesAsFirstResponse,
   API_SCOPES,
   articleSchema,
@@ -45,7 +48,7 @@ import {
   type TicketLinkType,
   type Capability
 } from "@agentdesk/domain";
-import type { AgentTargetType, AgentType, TicketPriority, TicketStatus } from "@agentdesk/shared";
+import type { AgentTargetType, AgentType, NotificationKind, TicketPriority, TicketStatus } from "@agentdesk/shared";
 import { assertCanAccessRecord } from "./access";
 import { writeAuditEvent } from "./audit";
 import { getCurrentUser, isDemoAuthEnabled, requireCurrentUser } from "./auth";
@@ -391,6 +394,35 @@ export async function updateTicketAction(formData: FormData) {
     requestContextId: requestContext.requestContextId
   });
 
+  if (after.status !== before.status) {
+    await fanOutNotification({
+      organizationId: user.organizationId,
+      actorUserId: user.id,
+      actorName: user.name,
+      kind: "TICKET_STATUS_CHANGED",
+      entityType: "Ticket",
+      entityId: ticketId,
+      entityTitle: after.title,
+      detail: after.status,
+      assigneeId: after.assignedUserId,
+      requestContextId: requestContext.requestContextId
+    });
+  }
+
+  if (after.assignedUserId && after.assignedUserId !== before.assignedUserId) {
+    await fanOutNotification({
+      organizationId: user.organizationId,
+      actorUserId: user.id,
+      actorName: user.name,
+      kind: "TICKET_ASSIGNED",
+      entityType: "Ticket",
+      entityId: ticketId,
+      entityTitle: after.title,
+      assigneeId: after.assignedUserId,
+      requestContextId: requestContext.requestContextId
+    });
+  }
+
   if (after.status === "ESCALATED" && before.status !== "ESCALATED") {
     await writeAuditEvent({
       organizationId: user.organizationId,
@@ -487,6 +519,23 @@ export async function addTicketCommentAction(formData: FormData) {
     requestContextId: requestContext.requestContextId
   });
 
+  const commented = await prisma.ticket.findUniqueOrThrow({
+    where: { id: ticketId },
+    select: { title: true, assignedUserId: true }
+  });
+  await fanOutNotification({
+    organizationId: user.organizationId,
+    actorUserId: user.id,
+    actorName: user.name,
+    kind: "TICKET_COMMENT_ADDED",
+    entityType: "Ticket",
+    entityId: ticketId,
+    entityTitle: commented.title,
+    detail: body.slice(0, 80),
+    assigneeId: commented.assignedUserId,
+    requestContextId: requestContext.requestContextId
+  });
+
   revalidatePath(`/tickets/${ticketId}`);
 }
 
@@ -557,6 +606,21 @@ export async function updateIncidentStatusAction(formData: FormData) {
     metadata: { actorRole: user.role },
     requestContextId: requestContext.requestContextId
   });
+
+  if (after.status !== before.status) {
+    await fanOutNotification({
+      organizationId: user.organizationId,
+      actorUserId: user.id,
+      actorName: user.name,
+      kind: "INCIDENT_STATUS_CHANGED",
+      entityType: "Incident",
+      entityId: incidentId,
+      entityTitle: after.title,
+      detail: after.status,
+      ownerId: after.ownerId,
+      requestContextId: requestContext.requestContextId
+    });
+  }
 
   revalidatePath(`/incidents/${incidentId}`);
   revalidatePath("/incidents");
@@ -2159,4 +2223,129 @@ export async function rateArticleLinkAction(formData: FormData) {
   await prisma.ticketArticleLink.update({ where: { id: linkId }, data: { wasHelpful } });
 
   revalidatePath(`/tickets/${link.ticket.id}`);
+}
+
+/* -------------------------------------------------------------------------
+ * Watchers and notifications
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Fan a change out to everyone who should hear about it.
+ *
+ * Called inline from the mutating actions rather than queued. That is a
+ * deliberate v1 choice: a queued fan-out only works while the worker runs,
+ * and a notification that silently never arrives is worse than one that
+ * costs the save a few milliseconds. TODO: move behind a BackgroundJob
+ * once the recipient lists grow past a handful.
+ */
+async function fanOutNotification(params: {
+  organizationId: string;
+  actorUserId: string;
+  actorName: string;
+  kind: NotificationKind;
+  entityType: "Ticket" | "Incident";
+  entityId: string;
+  entityTitle: string;
+  detail?: string;
+  assigneeId?: string | null;
+  ownerId?: string | null;
+  requestContextId?: string | null;
+}) {
+  const watches = await prisma.watch.findMany({
+    where: { organizationId: params.organizationId, entityType: params.entityType, entityId: params.entityId },
+    select: { userId: true }
+  });
+
+  const recipients = resolveRecipients({
+    actorUserId: params.actorUserId,
+    watcherIds: watches.map((watch) => watch.userId),
+    assigneeId: params.assigneeId,
+    ownerId: params.ownerId,
+    rule: NOTIFICATION_RULES[params.kind]
+  });
+
+  if (recipients.length === 0) return;
+
+  const message = describeNotification(params.kind, {
+    entityTitle: params.entityTitle,
+    actorName: params.actorName,
+    detail: params.detail
+  });
+
+  await prisma.notification.createMany({
+    data: recipients.map((recipientId) => ({
+      organizationId: params.organizationId,
+      recipientId,
+      kind: params.kind,
+      entityType: params.entityType,
+      entityId: params.entityId,
+      title: message.title,
+      body: message.body,
+      requestContextId: params.requestContextId ?? null
+    }))
+  });
+}
+
+export async function watchEntityAction(formData: FormData) {
+  const { user } = await requireActionUser("watch.create");
+
+  const entityType = stringValue(formData, "entityType");
+  const entityId = stringValue(formData, "entityId");
+  if (entityType !== "Ticket" && entityType !== "Incident") {
+    throw new ActionError("Only tickets and incidents can be watched.");
+  }
+
+  // Confirm the entity is in the caller's organization before recording a
+  // watch on it, or the watch table becomes a way to assert that an id
+  // exists elsewhere.
+  const exists =
+    entityType === "Ticket"
+      ? await prisma.ticket.findFirst({ where: { id: entityId, organizationId: user.organizationId }, select: { id: true } })
+      : await prisma.incident.findFirst({ where: { id: entityId, organizationId: user.organizationId }, select: { id: true } });
+  if (!exists) {
+    throw new ActionError("That record was not found or is outside the active organization.");
+  }
+
+  // Watching twice is a double-click. The unique constraint makes the
+  // second write a no-op rather than an error.
+  await prisma.watch.upsert({
+    where: { userId_entityType_entityId: { userId: user.id, entityType, entityId } },
+    create: { organizationId: user.organizationId, userId: user.id, entityType, entityId },
+    update: {}
+  });
+
+  revalidatePath(entityType === "Ticket" ? `/tickets/${entityId}` : `/incidents/${entityId}`);
+}
+
+export async function unwatchEntityAction(formData: FormData) {
+  const { user } = await requireActionUser("watch.delete");
+
+  const entityType = stringValue(formData, "entityType");
+  const entityId = stringValue(formData, "entityId");
+
+  await prisma.watch.deleteMany({
+    where: { userId: user.id, entityType, entityId, organizationId: user.organizationId }
+  });
+
+  revalidatePath(entityType === "Ticket" ? `/tickets/${entityId}` : `/incidents/${entityId}`);
+}
+
+export async function markNotificationsReadAction(formData: FormData) {
+  const { user } = await requireActionUser("notification.read");
+
+  const notificationId = optionalStringValue(formData, "notificationId");
+
+  // Scoped to recipientId in the where clause, so one user can never mark
+  // another user's notifications read even with a valid id.
+  await prisma.notification.updateMany({
+    where: {
+      recipientId: user.id,
+      readAt: null,
+      ...(notificationId ? { id: notificationId } : {})
+    },
+    data: { readAt: new Date() }
+  });
+
+  revalidatePath("/notifications");
+  revalidatePath("/", "layout");
 }

@@ -2,7 +2,7 @@ import { notFound } from "next/navigation";
 import { Badge, Button, Card, DataTable, DescriptionList, Field, JsonBlock, PageHeader, Select } from "@agentdesk/ui";
 import { prisma } from "@agentdesk/db";
 import { INCIDENT_STATUSES, labelMaps } from "@agentdesk/shared";
-import { runLogAnomalyAction, updateIncidentStatusAction } from "../../../lib/actions";
+import { runLogAnomalyAction, unwatchEntityAction, updateIncidentStatusAction, watchEntityAction } from "../../../lib/actions";
 import { formatDateTime, logLevelTone, priorityTone, ticketStatusTone } from "../../../lib/format";
 import { requireCurrentUser } from "../../../lib/auth";
 
@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 
 export default async function IncidentDetailPage({ params }: { params: { id: string } }) {
   const currentUser = await requireCurrentUser();
-  const [incident, agentRuns, auditEvents] = await Promise.all([
+  const [incident, agentRuns, auditEvents, existingWatch] = await Promise.all([
     prisma.incident.findFirst({
       where: { id: params.id, organizationId: currentUser.organizationId },
       include: {
@@ -31,6 +31,10 @@ export default async function IncidentDetailPage({ params }: { params: { id: str
       include: { actor: true },
       orderBy: { createdAt: "desc" },
       take: 10
+    }),
+    prisma.watch.findFirst({
+      where: { userId: currentUser.id, entityType: "Incident", entityId: params.id },
+      select: { id: true }
     })
   ]);
 
@@ -42,10 +46,17 @@ export default async function IncidentDetailPage({ params }: { params: { id: str
         title={incident.title}
         eyebrow={incident.affectedService}
         actions={
-          <form action={runLogAnomalyAction}>
-            <input type="hidden" name="incidentId" value={incident.id} />
-            <Button type="submit" variant="primary">Run Anomaly Agent</Button>
-          </form>
+          <div className="actions">
+            <form action={runLogAnomalyAction}>
+              <input type="hidden" name="incidentId" value={incident.id} />
+              <Button type="submit" variant="primary">Run Anomaly Agent</Button>
+            </form>
+            <form action={existingWatch ? unwatchEntityAction : watchEntityAction}>
+              <input type="hidden" name="entityType" value="Incident" />
+              <input type="hidden" name="entityId" value={incident.id} />
+              <Button type="submit">{existingWatch ? "Unwatch" : "Watch"}</Button>
+            </form>
+          </div>
         }
       >
         <div className="pill-list">
