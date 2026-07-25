@@ -17,6 +17,8 @@ async function reset() {
   await prisma.ticketComment.deleteMany();
   // After ticketComment: comments carry a nullable cannedReplyId, so the
   // templates cannot go first without tripping the foreign key.
+  await prisma.ticketArticleLink.deleteMany();
+  await prisma.knowledgeArticle.deleteMany();
   await prisma.cannedReply.deleteMany();
   await prisma.ticket.deleteMany();
   await prisma.incident.deleteMany();
@@ -343,6 +345,48 @@ async function main() {
         isActive: false,
         createdById: admin.id,
         usageCount: 12
+      }
+    ]
+  });
+
+  await prisma.knowledgeArticle.createMany({
+    data: [
+      {
+        organizationId: primaryOrg.id,
+        title: "Troubleshooting SSO and SAML login failures",
+        summary:
+          "How to diagnose SSO login failures: check auth-service latency, SAML assertion validation, and recent deploys.",
+        body:
+          "1. Confirm the scope: one tenant or all?\n2. Check auth-service error logs for assertion timeouts.\n3. Compare against the most recent deploy window.\n4. If the connection pool is saturated, escalate to engineering.",
+        category: "ACCESS",
+        tags: ["sso", "auth"],
+        status: "PUBLISHED",
+        authorId: engineer.id,
+        publishedAt: hoursAgo(200),
+        linkCount: 3
+      },
+      {
+        organizationId: primaryOrg.id,
+        title: "Reconciling invoice and contract seat counts",
+        summary: "Steps for resolving billing disputes where the invoice seat count does not match the signed order.",
+        body:
+          "Ask for the signed order form and the seat removal timestamp, then compare against the billing sync log for that contract.",
+        category: "BILLING",
+        tags: ["billing", "invoice"],
+        status: "PUBLISHED",
+        authorId: support.id,
+        publishedAt: hoursAgo(500)
+      },
+      {
+        organizationId: primaryOrg.id,
+        title: "Draft: webhook retry policy",
+        summary: "Work in progress note about how webhook retries are scheduled and when to dead-letter them.",
+        body:
+          "Placeholder while the backoff behaviour settles. Not published, so it is deliberately absent from ticket suggestions.",
+        category: "INTEGRATION",
+        tags: ["webhook"],
+        status: "DRAFT",
+        authorId: engineer.id
       }
     ]
   });
