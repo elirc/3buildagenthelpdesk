@@ -1,7 +1,7 @@
 import { Badge, Button, Card, DataTable, Field, PageHeader, Select, TextInput } from "@agentdesk/ui";
 import { prisma } from "@agentdesk/db";
 import { LOG_ENVIRONMENTS, LOG_LEVELS } from "@agentdesk/shared";
-import { runLogAnomalyAction } from "../../lib/actions";
+import { createIncidentFromLogsAction, runLogAnomalyAction } from "../../lib/actions";
 import { formatDateTime, logLevelTone } from "../../lib/format";
 import { requireCurrentUser } from "../../lib/auth";
 import { pageHref, parsePagination } from "../../lib/pagination";
@@ -148,7 +148,13 @@ export default async function LogsPage({
                   </td>
                   <td>{group.service}<div className="muted">{group.environment}</div></td>
                   <td>{group.count}</td>
-                  <td>{group.sample}</td>
+                  <td>
+                    {group.sample}
+                    <form action={createIncidentFromLogsAction} style={{ marginTop: 6 }}>
+                      <input type="hidden" name="fingerprint" value={group.fingerprint} />
+                      <Button type="submit">Open Incident</Button>
+                    </form>
+                  </td>
                 </tr>
               ))}
             </tbody>
