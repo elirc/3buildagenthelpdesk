@@ -1,5 +1,5 @@
 import { Prisma, PrismaClient } from "@prisma/client";
-import { createLogFingerprint, calculateSlaDueAt } from "@agentdesk/domain";
+import { createLogFingerprint, calculateFirstResponseDueAt, calculateSlaDueAt } from "@agentdesk/domain";
 import { runRegisteredAgent } from "@agentdesk/agents";
 import type { AgentTargetType, AgentType } from "@agentdesk/shared";
 
@@ -136,6 +136,8 @@ async function main() {
       assignedUserId: engineer.id,
       incidentId: authIncident.id,
       slaDueAt: calculateSlaDueAt("CRITICAL", hoursAgo(4)),
+      firstResponseDueAt: calculateFirstResponseDueAt("CRITICAL", hoursAgo(4)),
+      firstRespondedAt: hoursAgo(3.8),
       tags: ["sso", "production", "incident"],
       createdAt: hoursAgo(4),
       updatedAt: hoursAgo(1)
@@ -157,6 +159,9 @@ async function main() {
       assignedUserId: support.id,
       incidentId: authIncident.id,
       slaDueAt: hoursFromNow(3),
+      // Raised three hours ago at HIGH (2h response target) and still
+      // unanswered — the case the dashboard metric exists to surface.
+      firstResponseDueAt: calculateFirstResponseDueAt("HIGH", hoursAgo(3)),
       tags: ["login", "auth"],
       createdAt: hoursAgo(3),
       updatedAt: hoursAgo(0.5)

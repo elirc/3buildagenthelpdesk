@@ -1,5 +1,5 @@
 import { labelMaps, type LogLevel, type TicketPriority, type TicketStatus } from "@agentdesk/shared";
-import { effectiveSlaDueAt, getSlaState, isSlaPaused } from "@agentdesk/domain";
+import { effectiveSlaDueAt, getFirstResponseState, getSlaState, isSlaPaused } from "@agentdesk/domain";
 
 export function formatDateTime(date?: Date | string | null): string {
   if (!date) return "Not set";
@@ -116,4 +116,25 @@ export function ticketStatusLabel(status: TicketStatus): string {
 
 export function priorityLabel(priority: TicketPriority): string {
   return labelMaps.priority[priority];
+}
+
+/** Label and tone for the first-response clock. */
+export function firstResponseTone(params: { firstRespondedAt?: Date | null; firstResponseDueAt?: Date | null }) {
+  const state = getFirstResponseState(params);
+  switch (state) {
+    case "met":
+      return { label: "Responded", tone: "success" as const };
+    case "late":
+      // Answered, but not in time. Distinct from "met" so a manager can see
+      // it, and distinct from "breached" because nobody is still waiting.
+      return { label: "Responded late", tone: "warning" as const };
+    case "breached":
+      return { label: "No response", tone: "danger" as const };
+    case "approaching":
+      return { label: "Response due", tone: "warning" as const };
+    case "pending":
+      return { label: "Awaiting response", tone: "neutral" as const };
+    default:
+      return { label: "Not tracked", tone: "neutral" as const };
+  }
 }

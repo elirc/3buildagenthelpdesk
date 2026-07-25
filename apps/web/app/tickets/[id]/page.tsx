@@ -13,7 +13,7 @@ import {
 } from "@agentdesk/domain";
 import { labelMaps, TICKET_CATEGORIES, TICKET_PRIORITIES } from "@agentdesk/shared";
 import { addTicketCommentAction, linkTicketsAction, runDuplicateDetectionAction, runTicketAgentAction, unlinkTicketsAction, updateTicketAction } from "../../../lib/actions";
-import { formatDateTime, formatDuration, priorityTone, slaTone, ticketStatusTone } from "../../../lib/format";
+import { firstResponseTone, formatDateTime, formatDuration, priorityTone, slaTone, ticketStatusTone } from "../../../lib/format";
 import { requireCurrentUser } from "../../../lib/auth";
 
 export const dynamic = "force-dynamic";
@@ -98,6 +98,10 @@ export default async function TicketDetailPage({
     slaPausedTotalMs: ticket.slaPausedTotalMs
   });
   // Time already banked, plus the pause running right now.
+  const firstResponse = firstResponseTone({
+    firstRespondedAt: ticket.firstRespondedAt,
+    firstResponseDueAt: ticket.firstResponseDueAt
+  });
   const pausedSoFarMs =
     ticket.slaPausedTotalMs + (ticket.slaPausedAt ? Date.now() - ticket.slaPausedAt.getTime() : 0);
 
@@ -162,6 +166,7 @@ export default async function TicketDetailPage({
           <Badge tone={priorityTone(ticket.priority)}>{labelMaps.priority[ticket.priority]}</Badge>
           <Badge tone={sla.tone}>{sla.label}</Badge>
           {sla.paused ? <Badge tone="info">SLA Paused</Badge> : null}
+          <Badge tone={firstResponse.tone}>{firstResponse.label}</Badge>
         </div>
       </PageHeader>
 
@@ -189,6 +194,12 @@ export default async function TicketDetailPage({
                   )
                 },
                 { label: "Customer Wait", value: formatDuration(pausedSoFarMs) },
+                {
+                  label: "First Response",
+                  value: ticket.firstRespondedAt
+                    ? formatDateTime(ticket.firstRespondedAt)
+                    : `Due ${formatDateTime(ticket.firstResponseDueAt)}`
+                },
                 { label: "Incident", value: ticket.incident ? <a href={`/incidents/${ticket.incident.id}`}>{ticket.incident.title}</a> : "None" }
               ]}
             />

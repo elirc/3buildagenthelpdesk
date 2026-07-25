@@ -3,7 +3,7 @@ import { Badge, Button, Card, DataTable, EmptyState, Field, PageHeader, Paginati
 import { prisma } from "@agentdesk/db";
 import { labelMaps, TICKET_PRIORITIES, TICKET_STATUSES } from "@agentdesk/shared";
 import { canEditSavedView, canMutateTickets, describeViewQuery } from "@agentdesk/domain";
-import { slaTone, formatDateTime, priorityTone, ticketStatusTone } from "../../lib/format";
+import { firstResponseTone, slaTone, formatDateTime, priorityTone, ticketStatusTone } from "../../lib/format";
 import { bulkUpdateTicketsAction, createSavedViewAction, deleteSavedViewAction, toggleSavedViewSharedAction } from "../../lib/actions";
 import { requireCurrentUser } from "../../lib/auth";
 import {
@@ -233,6 +233,7 @@ export default async function TicketsPage({ searchParams }: { searchParams: Tick
                 <SortableTh href={columnHref("status")} label="Status" indicator={sortIndicator(sort, "status")} />
                 <SortableTh href={columnHref("priority")} label="Priority" indicator={sortIndicator(sort, "priority")} />
                 <SortableTh href={columnHref("slaDueAt")} label="SLA" indicator={sortIndicator(sort, "slaDueAt")} />
+                <th scope="col">First Response</th>
                 <th scope="col">Owner</th>
                 <th scope="col">Incident</th>
                 <SortableTh href={columnHref("updatedAt")} label="Updated" indicator={sortIndicator(sort, "updatedAt")} />
@@ -268,6 +269,15 @@ export default async function TicketsPage({ searchParams }: { searchParams: Tick
                       <Badge tone={sla.tone}>{sla.label}</Badge>
                       {sla.paused ? <Badge tone="info">Paused</Badge> : null}
                       <div className="muted">{formatDateTime(sla.effectiveDueAt)}</div>
+                    </td>
+                    <td>
+                      {(() => {
+                        const fr = firstResponseTone({
+                          firstRespondedAt: ticket.firstRespondedAt,
+                          firstResponseDueAt: ticket.firstResponseDueAt
+                        });
+                        return <Badge tone={fr.tone}>{fr.label}</Badge>;
+                      })()}
                     </td>
                     <td>
                       {ticket.assignedUser?.name ?? "Unassigned"}

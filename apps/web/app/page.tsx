@@ -33,6 +33,7 @@ export default async function DashboardPage() {
     openTicketCount,
     openTicketsByPriority,
     slaWatchRows,
+    awaitingFirstResponse,
     activeIncidents,
     failedJobs,
     prodErrorLogs,
@@ -69,6 +70,13 @@ export default async function DashboardPage() {
               + COALESCE(now() - "slaPausedAt", interval '0')
             <= ${slaWatchCutoff}
     `,
+    prisma.ticket.count({
+      where: {
+        ...openTicketWhere,
+        firstRespondedAt: null,
+        firstResponseDueAt: { lt: new Date() }
+      }
+    }),
     prisma.incident.findMany({
       where: { organizationId: currentUser.organizationId, status: { not: "RESOLVED" } },
       include: { owner: true, _count: { select: { tickets: true, logs: true, jobs: true } } },
@@ -98,10 +106,15 @@ export default async function DashboardPage() {
         <p>Support, incident, job, log, and deterministic agent signals in one operational view.</p>
       </PageHeader>
 
-      <div className="grid grid--4">
+      <div className="grid grid--5">
         <Metric label="Open Tickets" value={openTicketCount} tone="info" />
         <Metric label="SLA Watch" value={slaWatchCount} tone={slaWatchCount > 0 ? "warning" : "success"} />
         <Metric label="Active Incidents" value={activeIncidents.length} tone={activeIncidents.length > 0 ? "danger" : "success"} />
+        <Metric
+          label="No First Response"
+          value={awaitingFirstResponse}
+          tone={awaitingFirstResponse > 0 ? "danger" : "success"}
+        />
         <Metric label="Failed Jobs" value={failedJobs} tone={failedJobs > 0 ? "danger" : "success"} />
       </div>
 
