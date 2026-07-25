@@ -12,7 +12,7 @@ import {
   TICKET_LINK_TYPES
 } from "@agentdesk/domain";
 import { labelMaps, TICKET_CATEGORIES, TICKET_PRIORITIES } from "@agentdesk/shared";
-import { addTicketCommentAction, linkTicketsAction, runTicketAgentAction, unlinkTicketsAction, updateTicketAction } from "../../../lib/actions";
+import { addTicketCommentAction, linkTicketsAction, runDuplicateDetectionAction, runTicketAgentAction, unlinkTicketsAction, updateTicketAction } from "../../../lib/actions";
 import { formatDateTime, formatDuration, priorityTone, slaTone, ticketStatusTone } from "../../../lib/format";
 import { requireCurrentUser } from "../../../lib/auth";
 
@@ -26,7 +26,7 @@ export default async function TicketDetailPage({
   searchParams: { replyId?: string };
 }) {
   const currentUser = await requireCurrentUser();
-  const [ticket, teams, users, incidents, agentRuns, auditEvents, cannedReplies, ticketLinks, linkableTickets] =
+  const [ticket, teams, users, incidents, agentRuns, auditEvents, cannedReplies, ticketLinks, linkableTickets, duplicateRun] =
     await Promise.all([
     prisma.ticket.findFirst({
       where: { id: params.id, organizationId: currentUser.organizationId },
@@ -73,6 +73,16 @@ export default async function TicketDetailPage({
       orderBy: { updatedAt: "desc" },
       take: 50,
       select: { id: true, title: true, status: true }
+    }),
+    prisma.agentRun.findFirst({
+      where: {
+        organizationId: currentUser.organizationId,
+        agentType: "DUPLICATE_DETECTION",
+        targetType: "TICKET",
+        targetId: params.id,
+        status: "SUCCEEDED"
+      },
+      orderBy: { createdAt: "desc" }
     })
   ]);
 
@@ -99,6 +109,17 @@ export default async function TicketDetailPage({
   // Already-linked tickets are removed from the picker, so every option
   // offered is one the validator will accept.
   const alreadyLinkedIds = new Set(linkedTicketIds(ticket.id, ticketLinks));
+
+  // The agent stores its whole AgentRunResult in `output`, so the matches
+  // are two levels down. Narrowed defensively rather than cast: this JSON
+  // was written by a previous version of the agent and may not match the
+  // shape the current code expects.
+  const duplicateOutput = (duplicateRun?.output as { output?: { matches?: unknown } } | null)?.output;
+  const duplicateMatches = Array.isArray(duplicateOutput?.matches)
+    ? (duplicateOutput.matches as Array<{ ticketId: string; title: string; similarity: number; reasons: string[] }>)
+        .filter((match) => !alreadyLinkedIds.has(match.ticketId))
+        .slice(0, 3)
+    : [];
   const linkCandidates = linkableTickets.filter((candidate) => !alreadyLinkedIds.has(candidate.id));
 
   // "Insert" is a GET that reloads this page with ?replyId=..., because the
@@ -124,10 +145,16 @@ export default async function TicketDetailPage({
         title={ticket.title}
         eyebrow={ticket.customerName}
         actions={
-          <form action={runTicketAgentAction}>
-            <input type="hidden" name="ticketId" value={ticket.id} />
-            <Button type="submit" variant="primary">Run Ticket Agent</Button>
-          </form>
+          <div className="actions">
+            <form action={runTicketAgentAction}>
+              <input type="hidden" name="ticketId" value={ticket.id} />
+              <Button type="submit" variant="primary">Run Ticket Agent</Button>
+            </form>
+            <form action={runDuplicateDetectionAction}>
+              <input type="hidden" name="ticketId" value={ticket.id} />
+              <Button type="submit">Check for Duplicates</Button>
+            </form>
+          </div>
         }
       >
         <div className="pill-list">
@@ -319,6 +346,38 @@ export default async function TicketDetailPage({
               <p className="muted">No agent run yet.</p>
             )}
           </Card>
+
+          {duplicateMatches.length > 0 ? (
+            <Card title="Possible Duplicates">
+              <p className="muted">
+                From the duplicate detection run on {formatDateTime(duplicateRun?.createdAt)}. Advisory only — the
+                agent compares word overlap, not meaning.
+              </p>
+              <DataTable>
+                <tbody>
+                  {duplicateMatches.map((match) => (
+                    <tr key={match.ticketId}>
+                      <td>
+                        <a href={`/tickets/${match.ticketId}`}>{match.title}</a>
+                        <div className="muted">{match.reasons.join("; ")}</div>
+                      </td>
+                      <td>
+                        <Badge tone={match.similarity >= 70 ? "warning" : "neutral"}>{match.similarity}%</Badge>
+                      </td>
+                      <td>
+                        <form action={linkTicketsAction}>
+                          <input type="hidden" name="sourceTicketId" value={ticket.id} />
+                          <input type="hidden" name="targetTicketId" value={match.ticketId} />
+                          <input type="hidden" name="linkType" value="DUPLICATE_OF" />
+                          <Button type="submit" disabled={!writable}>Link as Duplicate</Button>
+                        </form>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </DataTable>
+            </Card>
+          ) : null}
 
           <Card title="Linked Tickets">
             {ticketLinks.length === 0 ? (

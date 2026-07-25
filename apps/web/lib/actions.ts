@@ -978,3 +978,64 @@ export async function bulkUpdateTicketsAction(formData: FormData) {
   }
   redirect(`/tickets?${params.toString()}`);
 }
+
+export async function runDuplicateDetectionAction(formData: FormData) {
+  const { user, requestContext } = await requireActionUser("agent.duplicate_detection.queue", "agent:run");
+
+  const ticketId = stringValue(formData, "ticketId");
+  const ticket = await prisma.ticket.findFirstOrThrow({
+    where: { id: ticketId, organizationId: user.organizationId }
+  });
+
+  // Candidates are deliberately narrow: same org, still open, not this
+  // ticket, raised in the last 30 days, capped at 50. A duplicate of
+  // something closed last quarter is history, not a triage decision.
+  const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const candidates = await prisma.ticket.findMany({
+    where: {
+      organizationId: user.organizationId,
+      id: { not: ticketId },
+      status: { notIn: ["RESOLVED", "CLOSED"] },
+      createdAt: { gte: since }
+    },
+    orderBy: { createdAt: "desc" },
+    take: 50
+  });
+
+  const input = {
+    ticket: {
+      id: ticket.id,
+      title: ticket.title,
+      description: ticket.description,
+      category: ticket.category,
+      customerName: ticket.customerName,
+      createdAt: ticket.createdAt.toISOString(),
+      incidentId: ticket.incidentId,
+      tags: ticket.tags
+    },
+    candidates: candidates.map((candidate) => ({
+      id: candidate.id,
+      title: candidate.title,
+      description: candidate.description,
+      category: candidate.category,
+      customerName: candidate.customerName,
+      status: candidate.status,
+      createdAt: candidate.createdAt.toISOString(),
+      incidentId: candidate.incidentId,
+      tags: candidate.tags
+    }))
+  };
+
+  const run = await queueAgentRun({
+    agentType: "DUPLICATE_DETECTION",
+    targetType: "TICKET",
+    targetId: ticketId,
+    input,
+    createdByUserId: user.id,
+    organizationId: user.organizationId,
+    requestContext
+  });
+
+  revalidatePath(`/tickets/${ticketId}`);
+  redirect(`/agents/${run.id}`);
+}
