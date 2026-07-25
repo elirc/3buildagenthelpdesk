@@ -35,6 +35,9 @@ export type AuditAction =
   | "canned_reply.deactivated"
   | "ticket.linked"
   | "ticket.unlinked"
+  | "view.created"
+  | "view.deleted"
+  | "view.shared"
   | "security.access_denied";
 
 export type AuditEventInput = {
