@@ -207,6 +207,12 @@ model Ticket {
   jobs           BackgroundJob[]
   linksOut       TicketLink[]    @relation("LinkSource")
   linksIn        TicketLink[]    @relation("LinkTarget")
+  // A merged ticket is closed and points at its survivor. It is never
+  // deleted: it is the record of what a customer actually reported.
+  mergedIntoId   String?
+  mergedInto     Ticket?         @relation("TicketMerges", fields: [mergedIntoId], references: [id])
+  mergedFrom     Ticket[]        @relation("TicketMerges")
+  mergedAt       DateTime?
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
 
