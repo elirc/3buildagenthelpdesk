@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { getAgentDefinition, runRegisteredAgent } from "@agentdesk/agents";
+import { JOB_LEASE_MS } from "@agentdesk/domain";
 import { redactSensitiveMetadata } from "@agentdesk/observability";
 import type { AgentTargetType, AgentType } from "@agentdesk/shared";
 import { prisma } from "./index";
@@ -37,6 +38,51 @@ async function writeWorkerAudit(params: {
   });
 }
 
+/**
+ * Return jobs whose worker went away back to the queue.
+ *
+ * lockedAt and lockedBy were written by claimNextJob from the beginning and
+ * never read by anything. A worker killed mid-job therefore left its row in
+ * RUNNING for ever — not retried, not dead-lettered, and indistinguishable
+ * on the jobs page from work that was merely slow.
+ *
+ * Runs before each claim rather than on a timer, so a single worker is
+ * enough to recover the queue and there is no separate process to babysit.
+ */
+export async function reclaimExpiredLeases(now = new Date()): Promise<number> {
+  const cutoff = new Date(now.getTime() - JOB_LEASE_MS);
+  const reclaimed = await prisma.backgroundJob.updateMany({
+    where: { status: "RUNNING", lockedAt: { lt: cutoff } },
+    // RETRYING rather than QUEUED so the jobs page distinguishes "recovered
+    // after a worker died" from "never started". attempts is deliberately
+    // untouched: the attempt was made, it just never reported back.
+    data: { status: "RETRYING", lockedAt: null, lockedBy: null }
+  });
+
+  if (reclaimed.count > 0) {
+    logWorkerEvent({ event: "job.leases_reclaimed", count: reclaimed.count, leaseMs: JOB_LEASE_MS });
+  }
+  return reclaimed.count;
+}
+
+/** Upsert this worker's heartbeat so the UI can tell "idle" from "absent". */
+export async function recordHeartbeat(workerId: string, delta: { processed?: number; failed?: number } = {}) {
+  await prisma.workerHeartbeat.upsert({
+    where: { workerId },
+    create: {
+      workerId,
+      processedCount: delta.processed ?? 0,
+      failedCount: delta.failed ?? 0
+    },
+    update: {
+      // lastSeenAt is @updatedAt, so any write refreshes it. The increment
+      // of 0 on an idle poll is what keeps that true without a second call.
+      processedCount: { increment: delta.processed ?? 0 },
+      failedCount: { increment: delta.failed ?? 0 }
+    }
+  });
+}
+
 export async function claimNextJob(workerId: string) {
   const candidate = await prisma.backgroundJob.findFirst({
     where: { status: { in: ["QUEUED", "RETRYING"] } },
@@ -62,8 +108,10 @@ export async function claimNextJob(workerId: string) {
 }
 
 export async function processNextBackgroundJob(workerId = `worker-${process.pid}`): Promise<WorkerResult> {
+  await reclaimExpiredLeases();
   const job = await claimNextJob(workerId);
   if (!job) {
+    await recordHeartbeat(workerId);
     return { status: "idle" };
   }
 
@@ -103,6 +151,7 @@ export async function processNextBackgroundJob(workerId = `worker-${process.pid}
       after: { status: "SUCCEEDED" }
     });
 
+    await recordHeartbeat(workerId, { processed: 1 });
     logWorkerEvent({ event: "job.completed", jobId: job.id, jobType: job.type });
     return { status: "processed", jobId: job.id, jobType: job.type };
   } catch (error) {
@@ -120,6 +169,7 @@ export async function processNextBackgroundJob(workerId = `worker-${process.pid}
       requestContextId: job.requestContextId,
       after: { status: nextStatus, errorMessage: message }
     });
+    await recordHeartbeat(workerId, { failed: 1 });
     logWorkerEvent({ event: "job.failed", jobId: job.id, jobType: job.type, errorMessage: message });
     return { status: "failed", jobId: job.id, error: message };
   }

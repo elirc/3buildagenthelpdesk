@@ -223,6 +223,20 @@ model TicketComment {
   createdAt  DateTime @default(now())
 }
 
+/// One row per worker process, upserted on every poll.
+///
+/// Without this there is no way to answer "is anything draining the queue".
+/// A queue with no worker looks exactly like a queue with no work: jobs sit
+/// in QUEUED and nothing complains.
+model WorkerHeartbeat {
+  id             String   @id @default(cuid())
+  workerId       String   @unique
+  lastSeenAt     DateTime @updatedAt
+  processedCount Int      @default(0)
+  failedCount    Int      @default(0)
+  startedAt      DateTime @default(now())
+}
+
 enum TicketLinkType {
   DUPLICATE_OF
   RELATED_TO
