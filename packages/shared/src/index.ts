@@ -66,6 +66,9 @@ export type AgentRunStatus = (typeof AGENT_RUN_STATUSES)[number];
 export const AGENT_TARGET_TYPES = ["TICKET", "INCIDENT", "LOG_GROUP", "JOB"] as const;
 export type AgentTargetType = (typeof AGENT_TARGET_TYPES)[number];
 
+export const ARTICLE_STATUSES = ["DRAFT", "PUBLISHED", "ARCHIVED"] as const;
+export type ArticleStatus = (typeof ARTICLE_STATUSES)[number];
+
 export type JsonRecord = Record<string, unknown>;
 
 export const labelMaps = {
@@ -122,6 +125,11 @@ export const labelMaps = {
     REPORT_GENERATION: "Report Generation",
     DATA_SYNC: "Data Sync",
     AGENT_RUN: "Agent Run"
+  },
+  articleStatus: {
+    DRAFT: "Draft",
+    PUBLISHED: "Published",
+    ARCHIVED: "Archived"
   },
   agentType: {
     TICKET_SUMMARIZATION: "Ticket Summarization",
