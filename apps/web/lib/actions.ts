@@ -6,6 +6,7 @@ import { redirect } from "next/navigation";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@agentdesk/db";
 import {
+  applySlaPauseTransition,
   assertIncidentTransition,
   assertTicketTransition,
   calculateSlaDueAt,
@@ -224,9 +225,23 @@ export async function updateTicketAction(formData: FormData) {
         ? before.resolvedAt
         : null;
 
+  // The SLA clock stops while the ticket waits on the customer. The domain
+  // decides what to write; this action only persists it. Note it is called
+  // on every save, not just on a status change — the helper is idempotent
+  // and returning early here would miss the resume when a ticket moves out
+  // of a paused status by any route, including straight to RESOLVED.
+  const slaPause = applySlaPauseTransition({
+    from: before.status,
+    to: nextStatus,
+    slaPausedAt: before.slaPausedAt,
+    slaPausedTotalMs: before.slaPausedTotalMs
+  });
+
   const after = await prisma.ticket.update({
     where: { id: ticketId },
     data: {
+      slaPausedAt: slaPause.slaPausedAt,
+      slaPausedTotalMs: slaPause.slaPausedTotalMs,
       title: stringValue(formData, "title"),
       description: stringValue(formData, "description"),
       customerName: stringValue(formData, "customerName"),
@@ -253,13 +268,17 @@ export async function updateTicketAction(formData: FormData) {
       status: before.status,
       priority: before.priority,
       assignedTeamId: before.assignedTeamId,
-      assignedUserId: before.assignedUserId
+      assignedUserId: before.assignedUserId,
+      slaPausedTotalMs: before.slaPausedTotalMs
     },
     after: {
       status: after.status,
       priority: after.priority,
       assignedTeamId: after.assignedTeamId,
-      assignedUserId: after.assignedUserId
+      assignedUserId: after.assignedUserId,
+      // Recorded so the audit trail can answer "why was this deadline
+      // later than the SLA implies" without replaying every transition.
+      slaPausedTotalMs: after.slaPausedTotalMs
     },
     metadata: { actorRole: user.role },
     requestContextId: requestContext.requestContextId

@@ -195,6 +195,11 @@ async function main() {
       assignedTeamId: revenueTeam.id,
       assignedUserId: support.id,
       slaDueAt: hoursFromNow(16),
+      // Currently paused: we asked the customer for their order form two
+      // hours ago and the clock has been stopped since. Gives the SLA
+      // pause feature something to show without any clicking.
+      slaPausedAt: hoursAgo(2),
+      slaPausedTotalMs: 90 * 60 * 1000,
       tags: ["billing", "invoice"],
       createdAt: hoursAgo(12),
       updatedAt: hoursAgo(2)
@@ -235,6 +240,11 @@ async function main() {
       assignedUserId: support.id,
       slaDueAt: hoursAgo(24),
       resolvedAt: hoursAgo(20),
+      // Resolved four hours after the original deadline, but six of those
+      // hours were spent waiting on the requester. Against the raw
+      // deadline this reads as a breach; against the effective one the SLA
+      // was met. A worked example of why the pause is tracked at all.
+      slaPausedTotalMs: 6 * 60 * 60 * 1000,
       tags: ["access"],
       createdAt: hoursAgo(50),
       updatedAt: hoursAgo(20)

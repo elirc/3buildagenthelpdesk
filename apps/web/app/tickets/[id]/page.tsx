@@ -7,7 +7,7 @@ import {
 } from "@agentdesk/domain";
 import { labelMaps, TICKET_CATEGORIES, TICKET_PRIORITIES } from "@agentdesk/shared";
 import { addTicketCommentAction, runTicketAgentAction, updateTicketAction } from "../../../lib/actions";
-import { formatDateTime, priorityTone, slaTone, ticketStatusTone } from "../../../lib/format";
+import { formatDateTime, formatDuration, priorityTone, slaTone, ticketStatusTone } from "../../../lib/format";
 import { requireCurrentUser } from "../../../lib/auth";
 
 export const dynamic = "force-dynamic";
@@ -47,7 +47,16 @@ export default async function TicketDetailPage({ params }: { params: { id: strin
 
   const writable = canMutateTickets(currentUser.role);
   const nextStatuses = Array.from(new Set([ticket.status, ...allowedTicketTransitions[ticket.status]]));
-  const sla = slaTone({ status: ticket.status, slaDueAt: ticket.slaDueAt, resolvedAt: ticket.resolvedAt });
+  const sla = slaTone({
+    status: ticket.status,
+    slaDueAt: ticket.slaDueAt,
+    resolvedAt: ticket.resolvedAt,
+    slaPausedAt: ticket.slaPausedAt,
+    slaPausedTotalMs: ticket.slaPausedTotalMs
+  });
+  // Time already banked, plus the pause running right now.
+  const pausedSoFarMs =
+    ticket.slaPausedTotalMs + (ticket.slaPausedAt ? Date.now() - ticket.slaPausedAt.getTime() : 0);
   const latestAgentRun = agentRuns[0];
 
   return (
@@ -66,6 +75,7 @@ export default async function TicketDetailPage({ params }: { params: { id: strin
           <Badge tone={ticketStatusTone(ticket.status)}>{labelMaps.ticketStatus[ticket.status]}</Badge>
           <Badge tone={priorityTone(ticket.priority)}>{labelMaps.priority[ticket.priority]}</Badge>
           <Badge tone={sla.tone}>{sla.label}</Badge>
+          {sla.paused ? <Badge tone="info">SLA Paused</Badge> : null}
         </div>
       </PageHeader>
 
@@ -78,7 +88,21 @@ export default async function TicketDetailPage({ params }: { params: { id: strin
                 { label: "Category", value: labelMaps.category[ticket.category] },
                 { label: "Assigned Team", value: ticket.assignedTeam?.name ?? "Unassigned" },
                 { label: "Assigned User", value: ticket.assignedUser?.name ?? "Unassigned" },
-                { label: "SLA Due", value: formatDateTime(ticket.slaDueAt) },
+                // Both deadlines are shown. The original is the commitment
+                // made when the ticket was raised; the effective one is what
+                // the ticket is actually judged against. Showing only the
+                // second would make the SLA look like it moved on its own.
+                { label: "SLA Due (original)", value: formatDateTime(ticket.slaDueAt) },
+                {
+                  label: "SLA Due (effective)",
+                  value: (
+                    <>
+                      {formatDateTime(sla.effectiveDueAt)}
+                      {sla.paused ? <div className="muted">Clock stopped &mdash; waiting on customer</div> : null}
+                    </>
+                  )
+                },
+                { label: "Customer Wait", value: formatDuration(pausedSoFarMs) },
                 { label: "Incident", value: ticket.incident ? <a href={`/incidents/${ticket.incident.id}`}>{ticket.incident.title}</a> : "None" }
               ]}
             />

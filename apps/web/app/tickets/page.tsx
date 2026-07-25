@@ -131,7 +131,13 @@ export default async function TicketsPage({ searchParams }: { searchParams: Tick
             </thead>
             <tbody>
               {tickets.map((ticket) => {
-                const sla = slaTone({ status: ticket.status, slaDueAt: ticket.slaDueAt, resolvedAt: ticket.resolvedAt });
+                const sla = slaTone({
+                  status: ticket.status,
+                  slaDueAt: ticket.slaDueAt,
+                  resolvedAt: ticket.resolvedAt,
+                  slaPausedAt: ticket.slaPausedAt,
+                  slaPausedTotalMs: ticket.slaPausedTotalMs
+                });
                 return (
                   <tr key={ticket.id}>
                     <td>
@@ -146,7 +152,8 @@ export default async function TicketsPage({ searchParams }: { searchParams: Tick
                     </td>
                     <td>
                       <Badge tone={sla.tone}>{sla.label}</Badge>
-                      <div className="muted">{formatDateTime(ticket.slaDueAt)}</div>
+                      {sla.paused ? <Badge tone="info">Paused</Badge> : null}
+                      <div className="muted">{formatDateTime(sla.effectiveDueAt)}</div>
                     </td>
                     <td>
                       {ticket.assignedUser?.name ?? "Unassigned"}

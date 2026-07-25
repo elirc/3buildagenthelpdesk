@@ -176,6 +176,16 @@ model Ticket {
   assignedUserId String?
   assignedUser   User?           @relation("AssignedTickets", fields: [assignedUserId], references: [id])
   slaDueAt       DateTime
+  // The SLA clock stops while a ticket waits on the customer. Rather than
+  // rewriting slaDueAt on every pause — which would destroy the original
+  // commitment and make "how long did we actually take" unanswerable — the
+  // paused time is accumulated alongside it and added back when the
+  // effective deadline is computed.
+  //
+  // slaPausedAt is the start of the pause currently in progress, or null.
+  // slaPausedTotalMs is the sum of every pause that has already ended.
+  slaPausedAt      DateTime?
+  slaPausedTotalMs Int       @default(0)
   resolvedAt     DateTime?
   incidentId     String?
   incident       Incident?       @relation(fields: [incidentId], references: [id])
