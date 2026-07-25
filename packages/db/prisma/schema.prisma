@@ -193,6 +193,10 @@ model Ticket {
   // slaPausedTotalMs is the sum of every pause that has already ended.
   slaPausedAt      DateTime?
   slaPausedTotalMs Int       @default(0)
+  // Resolution SLA is the lagging metric; this is the leading one. Both are
+  // nullable so existing rows read as "not tracked" rather than "breached".
+  firstResponseDueAt DateTime?
+  firstRespondedAt   DateTime?
   resolvedAt     DateTime?
   incidentId     String?
   incident       Incident?       @relation(fields: [incidentId], references: [id])

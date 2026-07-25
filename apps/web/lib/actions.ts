@@ -9,6 +9,7 @@ import {
   applySlaPauseTransition,
   assertIncidentTransition,
   assertTicketTransition,
+  calculateFirstResponseDueAt,
   calculateSlaDueAt,
   cannedReplySchema,
   canEditSavedView,
@@ -20,6 +21,7 @@ import {
   MAX_BULK_TICKETS,
   planBulkStatusChange,
   normalizeTags,
+  qualifiesAsFirstResponse,
   requireCapability,
   sanitizeViewQuery,
   savedViewSchema,
@@ -190,6 +192,7 @@ export async function createTicketAction(formData: FormData) {
     tags: parsed.tags,
     status: "NEW",
     slaDueAt: calculateSlaDueAt(parsed.priority, createdAt),
+    firstResponseDueAt: calculateFirstResponseDueAt(parsed.priority, createdAt),
     createdAt
   };
   const ticket = await prisma.ticket.create({ data: ticketData });
@@ -266,7 +269,13 @@ export async function updateTicketAction(formData: FormData) {
       incidentId,
       tags: normalizeTags(stringValue(formData, "tags")),
       resolvedAt: nextResolvedAt,
-      slaDueAt: nextPriority !== before.priority ? calculateSlaDueAt(nextPriority, before.createdAt) : before.slaDueAt
+      slaDueAt: nextPriority !== before.priority ? calculateSlaDueAt(nextPriority, before.createdAt) : before.slaDueAt,
+      // Re-prioritising moves both clocks, or a ticket escalated to CRITICAL
+      // would keep a 24-hour response target.
+      firstResponseDueAt:
+        nextPriority !== before.priority
+          ? calculateFirstResponseDueAt(nextPriority, before.createdAt)
+          : before.firstResponseDueAt
     }
   });
 
@@ -318,7 +327,10 @@ export async function addTicketCommentAction(formData: FormData) {
   const { user, requestContext } = await requireActionUser("ticket.comment", "ticket:update");
 
   const ticketId = stringValue(formData, "ticketId");
-  const ticket = await prisma.ticket.findFirst({ where: { id: ticketId, organizationId: user.organizationId }, select: { id: true, organizationId: true } });
+  const ticket = await prisma.ticket.findFirst({
+    where: { id: ticketId, organizationId: user.organizationId },
+    select: { id: true, organizationId: true, requesterEmail: true, firstRespondedAt: true }
+  });
   assertCanAccessRecord(user, ticket, "Ticket");
 
   const body = stringValue(formData, "body");
@@ -352,6 +364,29 @@ export async function addTicketCommentAction(formData: FormData) {
     await prisma.cannedReply.update({
       where: { id: cannedReplyId },
       data: { usageCount: { increment: 1 } }
+    });
+  }
+
+  // Stamped once and never overwritten. "First" is only meaningful if a
+  // later reply cannot quietly become it — otherwise the metric measures
+  // the most recent contact, which is a different thing entirely.
+  const isInternal = formData.get("isInternal") === "on";
+  if (
+    ticket.firstRespondedAt == null &&
+    qualifiesAsFirstResponse({ isInternal, authorEmail: user.email }, ticket.requesterEmail)
+  ) {
+    const respondedAt = new Date();
+    await prisma.ticket.update({ where: { id: ticketId }, data: { firstRespondedAt: respondedAt } });
+
+    await writeAuditEvent({
+      organizationId: user.organizationId,
+      actorUserId: user.id,
+      action: "ticket.first_response_recorded",
+      entityType: "Ticket",
+      entityId: ticketId,
+      after: { firstRespondedAt: respondedAt.toISOString() },
+      metadata: { actorRole: user.role },
+      requestContextId: requestContext.requestContextId
     });
   }
 

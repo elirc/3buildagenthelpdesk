@@ -576,3 +576,7 @@ textarea {
   font-weight: 700;
   color: var(--color-primary);
 }
+
+.grid--5 {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
