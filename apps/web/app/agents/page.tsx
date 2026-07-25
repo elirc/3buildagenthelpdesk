@@ -7,18 +7,28 @@ import { pageHref, parsePagination } from "../../lib/pagination";
 
 export const dynamic = "force-dynamic";
 
-export default async function AgentRunsPage({ searchParams }: { searchParams: { page?: string; pageSize?: string } }) {
+export default async function AgentRunsPage({
+  searchParams
+}: {
+  searchParams: { page?: string; pageSize?: string; showReplays?: string };
+}) {
   const currentUser = await requireCurrentUser();
   const pagination = parsePagination(searchParams);
+  // Replays are development artefacts, not operational history, so they
+  // are hidden unless asked for. Without this a single bulk comparison
+  // would bury the real runs.
+  const showReplays = searchParams.showReplays === "1";
+  const where = { organizationId: currentUser.organizationId, ...(showReplays ? {} : { isReplay: false }) };
+
   const [runs, totalRuns] = await Promise.all([
     prisma.agentRun.findMany({
-    where: { organizationId: currentUser.organizationId },
+    where,
     include: { createdBy: true },
     orderBy: { createdAt: "desc" },
     skip: pagination.skip,
     take: pagination.take
   }),
-    prisma.agentRun.count({ where: { organizationId: currentUser.organizationId } })
+    prisma.agentRun.count({ where })
   ]);
 
   return (
@@ -27,6 +37,11 @@ export default async function AgentRunsPage({ searchParams }: { searchParams: { 
         <p>Persisted deterministic agent executions with input snapshots, outputs, trace steps, confidence, and audit events.</p>
       </PageHeader>
       <Card>
+        <div className="actions" style={{ marginBottom: 12 }}>
+          <Button href={showReplays ? "/agents" : "/agents?showReplays=1"}>
+            {showReplays ? "Hide replays" : "Show replays"}
+          </Button>
+        </div>
         <DataTable>
           <thead>
             <tr>
@@ -41,7 +56,11 @@ export default async function AgentRunsPage({ searchParams }: { searchParams: { 
           <tbody>
             {runs.map((run) => (
               <tr key={run.id}>
-                <td><a href={`/agents/${run.id}`}>{labelMaps.agentType[run.agentType]}</a></td>
+                <td>
+                  <a href={`/agents/${run.id}`}>{labelMaps.agentType[run.agentType]}</a>
+                  {run.isReplay ? <Badge tone="neutral">Replay</Badge> : null}
+                  <div className="muted">v{run.agentVersion}</div>
+                </td>
                 <td><Badge tone={run.status === "SUCCEEDED" ? "success" : run.status === "FAILED" ? "danger" : "warning"}>{run.status}</Badge></td>
                 <td>{run.targetType} <span className="muted">{run.targetId.slice(0, 12)}</span></td>
                 <td>{run.confidenceScore == null ? "Pending" : `${Math.round(run.confidenceScore)}%`}</td>
