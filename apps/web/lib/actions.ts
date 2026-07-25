@@ -5,6 +5,7 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@agentdesk/db";
+import { getAgentDefinition, runRegisteredAgent } from "@agentdesk/agents";
 import {
   applySlaPauseTransition,
   assertIncidentTransition,
@@ -1257,4 +1258,100 @@ export async function requeueDeadLetterJobsAction(formData: FormData) {
   const params = new URLSearchParams({ requeued: String(eligible.length) });
   if (blocked > 0) params.set("blocked", String(blocked));
   redirect(`/jobs/dead-letter?${params.toString()}`);
+}
+
+/* -------------------------------------------------------------------------
+ * Agent replay
+ * ---------------------------------------------------------------------- */
+
+export async function replayAgentRunAction(formData: FormData) {
+  const { user, requestContext } = await requireActionUser("agent.replay", "agent:run");
+
+  const agentRunId = stringValue(formData, "agentRunId");
+  const original = await prisma.agentRun.findFirst({
+    where: { id: agentRunId, organizationId: user.organizationId }
+  });
+  assertCanAccessRecord(user, original, "Agent run");
+
+  if (!original.inputSnapshot || typeof original.inputSnapshot !== "object") {
+    throw new ActionError("This run has no usable input snapshot to replay.");
+  }
+
+  const definition = getAgentDefinition(original.agentType);
+
+  // Run synchronously rather than queueing. Agents are pure and fast, and
+  // a replay is a developer tool — waiting for a worker to be running
+  // would make the feature useless exactly when you are iterating.
+  let replay;
+  try {
+    const result = runRegisteredAgent(original.agentType, {
+      targetType: original.targetType,
+      targetId: original.targetId,
+      input: original.inputSnapshot as Record<string, unknown>
+    });
+
+    replay = await prisma.agentRun.create({
+      data: {
+        organizationId: user.organizationId,
+        agentType: original.agentType,
+        status: "SUCCEEDED",
+        targetType: original.targetType,
+        targetId: original.targetId,
+        inputSnapshot: original.inputSnapshot as Prisma.InputJsonValue,
+        output: result as unknown as Prisma.InputJsonValue,
+        confidenceScore: result.confidenceScore,
+        trace: result.trace as unknown as Prisma.InputJsonValue,
+        agentVersion: definition.version,
+        startedAt: new Date(),
+        completedAt: new Date(),
+        createdByUserId: user.id,
+        replayOfRunId: original.id,
+        isReplay: true,
+        requestContextId: requestContext.requestContextId
+      }
+    });
+  } catch (error) {
+    // A snapshot written by an older agent version may no longer match the
+    // input the current code expects. That failure is itself the signal —
+    // it means the change was breaking — so it is recorded as a failed
+    // replay rather than thrown away as an error page.
+    const message = error instanceof Error ? error.message : "Unknown replay error";
+    replay = await prisma.agentRun.create({
+      data: {
+        organizationId: user.organizationId,
+        agentType: original.agentType,
+        status: "FAILED",
+        targetType: original.targetType,
+        targetId: original.targetId,
+        inputSnapshot: original.inputSnapshot as Prisma.InputJsonValue,
+        errorMessage: message,
+        agentVersion: definition.version,
+        startedAt: new Date(),
+        completedAt: new Date(),
+        createdByUserId: user.id,
+        replayOfRunId: original.id,
+        isReplay: true,
+        requestContextId: requestContext.requestContextId
+      }
+    });
+  }
+
+  await writeAuditEvent({
+    organizationId: user.organizationId,
+    actorUserId: user.id,
+    action: "agent.run_replayed",
+    entityType: "AgentRun",
+    entityId: replay.id,
+    after: {
+      replayOfRunId: original.id,
+      fromVersion: original.agentVersion,
+      toVersion: definition.version,
+      status: replay.status
+    },
+    metadata: { actorRole: user.role },
+    requestContextId: requestContext.requestContextId
+  });
+
+  revalidatePath(`/agents/${original.id}`);
+  redirect(`/agents/${original.id}`);
 }

@@ -429,11 +429,19 @@ model AgentRun {
   createdByUserId  String?
   createdBy        User?           @relation(fields: [createdByUserId], references: [id])
   trace            Json?
+  // A replay is an AgentRun too, so it inherits the whole detail page.
+  // Self-relation: replayOf points at the run whose inputSnapshot was
+  // re-used, which is what makes before/after comparable at all.
+  replayOfRunId    String?
+  replayOf         AgentRun?       @relation("AgentReplays", fields: [replayOfRunId], references: [id])
+  replays          AgentRun[]      @relation("AgentReplays")
+  isReplay         Boolean         @default(false)
   createdAt        DateTime        @default(now())
 
   @@index([organizationId, agentType, status])
   @@index([organizationId, targetType, targetId])
   @@index([organizationId, createdAt])
+  @@index([organizationId, isReplay, createdAt])
 }
 
 model AuditEvent {
