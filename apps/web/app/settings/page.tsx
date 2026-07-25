@@ -93,6 +93,13 @@ export default async function SettingsPage() {
         </Card>
       </div>
 
+      <Card title="Routing Rules" className="mt" actions={<Button href="/settings/routing">Manage Routing</Button>}>
+        <p className="muted">
+          Assign new tickets automatically based on category, tags, requester domain or free text. Rules run in order;
+          the first match wins, and an explicit choice on the create form always beats a rule.
+        </p>
+      </Card>
+
       <Card title="Business Hours" className="mt">
         <p className="muted">
           When set, SLA and first-response deadlines for LOW, MEDIUM and HIGH tickets count only working hours, so a

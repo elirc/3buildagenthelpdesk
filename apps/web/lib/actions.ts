@@ -26,7 +26,11 @@ import {
   mergeTags,
   normalizeTags,
   qualifiesAsFirstResponse,
+  evaluateRoutingRules,
   requireCapability,
+  routingRuleSchema,
+  type EvaluableRule,
+  type RoutingCondition,
   sanitizeViewQuery,
   savedViewSchema,
   type SavedViewResource,
@@ -195,24 +199,83 @@ export async function createTicketAction(formData: FormData) {
       }
     : undefined;
 
+  // Routing runs only when the submitter left assignment blank. An explicit
+  // human choice always wins over a rule - otherwise an agent who
+  // deliberately assigned a ticket would watch it move on save, which
+  // teaches people to distrust the feature.
+  let routing: ReturnType<typeof evaluateRoutingRules> | null = null;
+  if (!parsed.assignedTeamId && !parsed.assignedUserId) {
+    const rules = await prisma.routingRule.findMany({
+      where: { organizationId: user.organizationId, isActive: true },
+      orderBy: { priorityOrder: "asc" }
+    });
+    const evaluable: EvaluableRule[] = rules.map((rule) => ({
+      id: rule.id,
+      name: rule.name,
+      priorityOrder: rule.priorityOrder,
+      isActive: rule.isActive,
+      conditions: (rule.conditions as unknown as RoutingCondition[]) ?? [],
+      assignTeamId: rule.assignTeamId,
+      assignUserId: rule.assignUserId,
+      setPriority: rule.setPriority,
+      addTags: rule.addTags
+    }));
+    routing = evaluateRoutingRules(
+      {
+        title: parsed.title,
+        description: parsed.description,
+        category: parsed.category,
+        priority: parsed.priority,
+        tags: parsed.tags,
+        requesterEmail: parsed.requesterEmail
+      },
+      evaluable
+    );
+  }
+
+  const routedPriority = routing?.setPriority ?? parsed.priority;
+  const routedTags = routing ? normalizeTags([...parsed.tags, ...routing.addTags]) : parsed.tags;
+
   const ticketData: Prisma.TicketUncheckedCreateInput = {
     organizationId: user.organizationId,
     title: parsed.title,
     description: parsed.description,
     customerName: parsed.customerName,
     requesterEmail: parsed.requesterEmail,
-    priority: parsed.priority,
+    priority: routedPriority,
     category: parsed.category,
-    assignedTeamId: parsed.assignedTeamId,
-    assignedUserId: parsed.assignedUserId,
+    assignedTeamId: parsed.assignedTeamId ?? routing?.assignTeamId ?? null,
+    assignedUserId: parsed.assignedUserId ?? routing?.assignUserId ?? null,
     incidentId: parsed.incidentId,
-    tags: parsed.tags,
+    tags: routedTags,
     status: "NEW",
-    slaDueAt: calculateSlaDueAt(parsed.priority, createdAt, calendar),
-    firstResponseDueAt: calculateFirstResponseDueAt(parsed.priority, createdAt, calendar),
+    slaDueAt: calculateSlaDueAt(routedPriority, createdAt, calendar),
+    firstResponseDueAt: calculateFirstResponseDueAt(routedPriority, createdAt, calendar),
     createdAt
   };
   const ticket = await prisma.ticket.create({ data: ticketData });
+
+  if (routing?.matchedRuleId) {
+    await prisma.routingRule.update({
+      where: { id: routing.matchedRuleId },
+      data: { matchCount: { increment: 1 } }
+    });
+    await writeAuditEvent({
+      organizationId: user.organizationId,
+      actorUserId: user.id,
+      action: "ticket.auto_routed",
+      entityType: "Ticket",
+      entityId: ticket.id,
+      after: {
+        ruleId: routing.matchedRuleId,
+        ruleName: routing.matchedRuleName,
+        assignTeamId: ticket.assignedTeamId,
+        assignUserId: ticket.assignedUserId
+      },
+      metadata: { actorRole: user.role, rulesEvaluated: routing.evaluated.length },
+      requestContextId: requestContext.requestContextId
+    });
+  }
 
   await writeAuditEvent({
     organizationId: user.organizationId,
@@ -1561,4 +1624,131 @@ export async function mergeTicketsAction(formData: FormData) {
   revalidatePath("/tickets");
   revalidatePath(`/tickets/${sourceTicketId}`);
   redirect(`/tickets/${targetTicketId}`);
+}
+
+/* -------------------------------------------------------------------------
+ * Routing rules
+ * ---------------------------------------------------------------------- */
+
+function parseRoutingForm(formData: FormData) {
+  // Conditions arrive as three parallel arrays from repeated form fields.
+  const fields = formData.getAll("conditionField").map(String);
+  const operators = formData.getAll("conditionOperator").map(String);
+  const values = formData.getAll("conditionValue").map(String);
+
+  const conditions = fields
+    .map((field, index) => ({
+      field,
+      operator: operators[index] || "equals",
+      value: (values[index] ?? "").trim()
+    }))
+    // A blank value is how an operator leaves an unused condition slot
+    // empty, so those rows are dropped rather than failing validation.
+    .filter((condition) => condition.value.length > 0);
+
+  return routingRuleSchema.parse({
+    name: stringValue(formData, "name"),
+    priorityOrder: stringValue(formData, "priorityOrder") || 100,
+    conditions,
+    assignTeamId: optionalStringValue(formData, "assignTeamId"),
+    assignUserId: optionalStringValue(formData, "assignUserId"),
+    setPriority: optionalStringValue(formData, "setPriority"),
+    addTags: normalizeTags(stringValue(formData, "addTags")),
+    isActive: formData.get("isActive") !== "off"
+  });
+}
+
+export async function createRoutingRuleAction(formData: FormData) {
+  const { user, requestContext } = await requireActionUser("routing.create", "canned_reply:manage");
+  const parsed = parseRoutingForm(formData);
+
+  // A rule may only point at teams and users inside the organization, and
+  // this is enforced at save time rather than at match time: a rule that
+  // fails silently every time it fires is worse than one that will not save.
+  await Promise.all([
+    assertScopedTeam(user, parsed.assignTeamId ?? null),
+    assertScopedUser(user, parsed.assignUserId ?? null)
+  ]);
+
+  const existing = await prisma.routingRule.findFirst({
+    where: { organizationId: user.organizationId, name: parsed.name },
+    select: { id: true }
+  });
+  if (existing) {
+    throw new ActionError(`A routing rule named "${parsed.name}" already exists.`);
+  }
+
+  const rule = await prisma.routingRule.create({
+    data: {
+      organizationId: user.organizationId,
+      name: parsed.name,
+      priorityOrder: parsed.priorityOrder,
+      conditions: parsed.conditions as unknown as Prisma.InputJsonValue,
+      assignTeamId: parsed.assignTeamId ?? null,
+      assignUserId: parsed.assignUserId ?? null,
+      setPriority: parsed.setPriority ?? null,
+      addTags: parsed.addTags,
+      isActive: parsed.isActive
+    }
+  });
+
+  await writeAuditEvent({
+    organizationId: user.organizationId,
+    actorUserId: user.id,
+    action: "routing_rule.created",
+    entityType: "RoutingRule",
+    entityId: rule.id,
+    after: { name: rule.name, priorityOrder: rule.priorityOrder, conditionCount: parsed.conditions.length },
+    metadata: { actorRole: user.role },
+    requestContextId: requestContext.requestContextId
+  });
+
+  revalidatePath("/settings/routing");
+}
+
+export async function toggleRoutingRuleAction(formData: FormData) {
+  const { user, requestContext } = await requireActionUser("routing.toggle", "canned_reply:manage");
+
+  const ruleId = stringValue(formData, "ruleId");
+  const before = await prisma.routingRule.findFirst({ where: { id: ruleId, organizationId: user.organizationId } });
+  assertCanAccessRecord(user, before, "Routing rule");
+
+  const after = await prisma.routingRule.update({ where: { id: ruleId }, data: { isActive: !before.isActive } });
+
+  await writeAuditEvent({
+    organizationId: user.organizationId,
+    actorUserId: user.id,
+    action: "routing_rule.updated",
+    entityType: "RoutingRule",
+    entityId: ruleId,
+    before: { isActive: before.isActive },
+    after: { isActive: after.isActive },
+    metadata: { actorRole: user.role },
+    requestContextId: requestContext.requestContextId
+  });
+
+  revalidatePath("/settings/routing");
+}
+
+export async function deleteRoutingRuleAction(formData: FormData) {
+  const { user, requestContext } = await requireActionUser("routing.delete", "canned_reply:manage");
+
+  const ruleId = stringValue(formData, "ruleId");
+  const rule = await prisma.routingRule.findFirst({ where: { id: ruleId, organizationId: user.organizationId } });
+  assertCanAccessRecord(user, rule, "Routing rule");
+
+  await prisma.routingRule.delete({ where: { id: ruleId } });
+
+  await writeAuditEvent({
+    organizationId: user.organizationId,
+    actorUserId: user.id,
+    action: "routing_rule.deleted",
+    entityType: "RoutingRule",
+    entityId: ruleId,
+    before: { name: rule.name, matchCount: rule.matchCount },
+    metadata: { actorRole: user.role },
+    requestContextId: requestContext.requestContextId
+  });
+
+  revalidatePath("/settings/routing");
 }
