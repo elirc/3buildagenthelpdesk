@@ -1,6 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { getAgentDefinition, runRegisteredAgent } from "@agentdesk/agents";
-import { JOB_LEASE_MS } from "@agentdesk/domain";
+import { JOB_LEASE_MS, nextRunAt } from "@agentdesk/domain";
 import { redactSensitiveMetadata } from "@agentdesk/observability";
 import type { AgentTargetType, AgentType } from "@agentdesk/shared";
 import { prisma } from "./index";
@@ -84,19 +84,26 @@ export async function recordHeartbeat(workerId: string, delta: { processed?: num
 }
 
 export async function claimNextJob(workerId: string) {
+  const now = new Date();
   const candidate = await prisma.backgroundJob.findFirst({
-    where: { status: { in: ["QUEUED", "RETRYING"] } },
-    orderBy: { createdAt: "asc" }
+    // runAt gates eligibility. A job backing off after a failure is still
+    // QUEUED/RETRYING but must not be picked up before its delay elapses.
+    where: { status: { in: ["QUEUED", "RETRYING"] }, runAt: { lte: now } },
+    orderBy: { runAt: "asc" }
   });
   if (!candidate) return null;
 
   const claimed = await prisma.backgroundJob.updateMany({
-    where: { id: candidate.id, status: { in: ["QUEUED", "RETRYING"] } },
+    // runAt is repeated in the conditional update for the same reason the
+    // status is: between the read and the write another worker may have
+    // taken and rescheduled this row.
+    where: { id: candidate.id, status: { in: ["QUEUED", "RETRYING"] }, runAt: { lte: now } },
     data: {
       status: "RUNNING",
       lockedAt: new Date(),
       lockedBy: workerId,
-      startedAt: new Date()
+      startedAt: new Date(),
+      lastAttemptAt: new Date()
     }
   });
 
@@ -156,10 +163,27 @@ export async function processNextBackgroundJob(workerId = `worker-${process.pid}
     return { status: "processed", jobId: job.id, jobType: job.type };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown worker error";
-    const nextStatus = job.attempts >= job.maxAttempts ? "DEAD_LETTERED" : "FAILED";
+
+    // The worker owns the attempt counter now. It previously shared it with
+    // retryJobAction, which incremented on the human's click while the
+    // worker separately compared it against maxAttempts — two writers, one
+    // counter, and a retry budget that depended on who moved last.
+    const attempts = job.attempts + 1;
+    const exhausted = attempts >= job.maxAttempts;
+    const nextStatus = exhausted ? "DEAD_LETTERED" : "RETRYING";
+    const scheduledFor = exhausted ? null : nextRunAt({ attempt: attempts, jobId: job.id });
+
     await prisma.backgroundJob.update({
       where: { id: job.id },
-      data: { status: nextStatus, errorMessage: message, finishedAt: new Date(), lockedAt: null, lockedBy: null }
+      data: {
+        status: nextStatus,
+        attempts,
+        errorMessage: message,
+        finishedAt: new Date(),
+        lockedAt: null,
+        lockedBy: null,
+        ...(scheduledFor ? { runAt: scheduledFor } : {})
+      }
     });
     await writeWorkerAudit({
       organizationId: job.organizationId,
@@ -167,10 +191,18 @@ export async function processNextBackgroundJob(workerId = `worker-${process.pid}
       entityType: "BackgroundJob",
       entityId: job.id,
       requestContextId: job.requestContextId,
-      after: { status: nextStatus, errorMessage: message }
+      after: { status: nextStatus, attempts, errorMessage: message, runAt: scheduledFor?.toISOString() ?? null }
     });
     await recordHeartbeat(workerId, { failed: 1 });
-    logWorkerEvent({ event: "job.failed", jobId: job.id, jobType: job.type, errorMessage: message });
+    logWorkerEvent({
+      event: exhausted ? "job.dead_lettered" : "job.rescheduled",
+      jobId: job.id,
+      jobType: job.type,
+      attempts,
+      maxAttempts: job.maxAttempts,
+      runAt: scheduledFor?.toISOString() ?? null,
+      errorMessage: message
+    });
     return { status: "failed", jobId: job.id, error: message };
   }
 }

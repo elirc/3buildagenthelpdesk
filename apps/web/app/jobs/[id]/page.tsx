@@ -86,6 +86,16 @@ export default async function JobDetailPage({ params }: { params: { id: string }
                 { label: "Type", value: labelMaps.jobType[job.type] },
                 { label: "Status", value: labelMaps.jobStatus[job.status] },
                 { label: "Attempts", value: `${job.attempts}/${job.maxAttempts}` },
+                {
+                  label: "Next Attempt",
+                  value:
+                    job.status === "DEAD_LETTERED" || job.status === "SUCCEEDED"
+                      ? "None"
+                      : job.runAt > new Date()
+                        ? `${formatDateTime(job.runAt)} (backing off)`
+                        : "Due now"
+                },
+                { label: "Last Attempt", value: formatDateTime(job.lastAttemptAt) },
                 { label: "Created", value: formatDateTime(job.createdAt) },
                 { label: "Started", value: formatDateTime(job.startedAt) },
                 { label: "Finished", value: formatDateTime(job.finishedAt) },
