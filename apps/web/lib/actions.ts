@@ -14,6 +14,7 @@ import {
   calculateSlaDueAt,
   cannedReplySchema,
   canEditSavedView,
+  canMergeTickets,
   canRequeueJob,
   canRetryJob,
   createIncidentSchema,
@@ -22,6 +23,7 @@ import {
   linkedTicketIds,
   MAX_BULK_TICKETS,
   planBulkStatusChange,
+  mergeTags,
   normalizeTags,
   qualifiesAsFirstResponse,
   requireCapability,
@@ -1436,4 +1438,127 @@ export async function updateBusinessCalendarAction(formData: FormData) {
   });
 
   revalidatePath("/settings");
+}
+
+/* -------------------------------------------------------------------------
+ * Merging duplicate tickets
+ * ---------------------------------------------------------------------- */
+
+export async function mergeTicketsAction(formData: FormData) {
+  const { user, requestContext } = await requireActionUser("ticket.merge", "ticket:update");
+
+  const sourceTicketId = stringValue(formData, "sourceTicketId");
+  const targetTicketId = stringValue(formData, "targetTicketId");
+
+  // Everything below runs in one transaction. A half-merged pair — comments
+  // moved but the source still open, or logs repointed but tags lost — is
+  // worse than a failed merge, because nothing downstream can tell.
+  const summary = await prisma.$transaction(async (tx) => {
+    // Re-read inside the transaction. The state checked must be the state
+    // written against, or a concurrent merge slips between the two.
+    const [source, target] = await Promise.all([
+      tx.ticket.findFirst({ where: { id: sourceTicketId, organizationId: user.organizationId } }),
+      tx.ticket.findFirst({ where: { id: targetTicketId, organizationId: user.organizationId } })
+    ]);
+    assertCanAccessRecord(user, source, "Ticket");
+    assertCanAccessRecord(user, target, "Target ticket");
+
+    const check = canMergeTickets({ source, target });
+    if (!check.ok) {
+      throw new ActionError(check.reason);
+    }
+
+    // Comments carry provenance rather than being rewritten. The body is
+    // what was actually said to a customer and must not be edited; the
+    // link to the originating ticket lives in the column instead.
+    const movedComments = await tx.ticketComment.updateMany({
+      where: { ticketId: sourceTicketId },
+      data: { ticketId: targetTicketId }
+    });
+    const movedLogs = await tx.structuredLog.updateMany({
+      where: { ticketId: sourceTicketId },
+      data: { ticketId: targetTicketId }
+    });
+    const movedJobs = await tx.backgroundJob.updateMany({
+      where: { relatedTicketId: sourceTicketId },
+      data: { relatedTicketId: targetTicketId }
+    });
+
+    await tx.ticket.update({
+      where: { id: targetTicketId },
+      data: {
+        tags: mergeTags(target.tags, source.tags),
+        // Only adopt the incident if the survivor has none. Overwriting an
+        // existing link would silently move a ticket off its own incident.
+        incidentId: target.incidentId ?? source.incidentId
+      }
+    });
+
+    await tx.ticket.update({
+      where: { id: sourceTicketId },
+      data: {
+        mergedIntoId: targetTicketId,
+        mergedAt: new Date(),
+        status: "CLOSED",
+        resolvedAt: source.resolvedAt ?? new Date()
+      }
+    });
+
+    // Record the relationship in the same vocabulary as a manual link, so
+    // the ticket page renders it without a special case. upsert because a
+    // DUPLICATE_OF link may already exist from Story B1 or B3.
+    await tx.ticketLink.upsert({
+      where: {
+        sourceTicketId_targetTicketId_linkType: {
+          sourceTicketId,
+          targetTicketId,
+          linkType: "DUPLICATE_OF"
+        }
+      },
+      create: {
+        organizationId: user.organizationId,
+        sourceTicketId,
+        targetTicketId,
+        linkType: "DUPLICATE_OF",
+        note: "Created by merge",
+        createdById: user.id
+      },
+      update: {}
+    });
+
+    return {
+      comments: movedComments.count,
+      logs: movedLogs.count,
+      jobs: movedJobs.count,
+      sourceTitle: source.title,
+      targetTitle: target.title
+    };
+  });
+
+  // Two events: "what happened to this ticket" must be answerable from
+  // either end, and entityId is how the audit log is queried.
+  await writeAuditEvent({
+    organizationId: user.organizationId,
+    actorUserId: user.id,
+    action: "ticket.merged",
+    entityType: "Ticket",
+    entityId: sourceTicketId,
+    after: { mergedIntoId: targetTicketId, status: "CLOSED" },
+    metadata: { actorRole: user.role, ...summary },
+    requestContextId: requestContext.requestContextId
+  });
+  await writeAuditEvent({
+    organizationId: user.organizationId,
+    actorUserId: user.id,
+    action: "ticket.merge_received",
+    entityType: "Ticket",
+    entityId: targetTicketId,
+    after: { mergedFrom: sourceTicketId },
+    metadata: { actorRole: user.role, ...summary },
+    requestContextId: requestContext.requestContextId
+  });
+
+  revalidatePath("/tickets");
+  revalidatePath(`/tickets/${sourceTicketId}`);
+  redirect(`/tickets/${targetTicketId}`);
 }
