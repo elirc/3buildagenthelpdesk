@@ -186,6 +186,76 @@ export function getSlaState(params: {
 /** How close to the deadline a ticket must be to count as "approaching". */
 export const SLA_WARNING_WINDOW_HOURS = 4;
 
+/* -------------------------------------------------------------------------
+ * First response time
+ *
+ * Resolution SLA is the lagging metric: it tells you months later that a
+ * quarter went badly. First response is the leading one, and it is the
+ * thing a waiting customer actually experiences — silence.
+ * ---------------------------------------------------------------------- */
+
+const firstResponseHoursByPriority: Record<TicketPriority, number> = {
+  CRITICAL: 0.5,
+  HIGH: 2,
+  MEDIUM: 8,
+  LOW: 24
+};
+
+export function calculateFirstResponseDueAt(priority: TicketPriority, createdAt = new Date()): Date {
+  return hoursFromNow(firstResponseHoursByPriority[priority], createdAt);
+}
+
+/**
+ * Whether a comment counts as our first response.
+ *
+ * Two conditions, and both are load-bearing:
+ *
+ * - It must not be internal. An internal note is us talking to ourselves;
+ *   the customer has still heard nothing. Counting it would let the metric
+ *   be satisfied without anyone contacting anybody.
+ * - It must not be from the requester. Some help desks let customers reply
+ *   into the thread, and their own message must not discharge our obligation
+ *   to answer it.
+ */
+export function qualifiesAsFirstResponse(
+  comment: { isInternal: boolean; authorEmail: string },
+  requesterEmail: string
+): boolean {
+  if (comment.isInternal) return false;
+  return comment.authorEmail.trim().toLowerCase() !== requesterEmail.trim().toLowerCase();
+}
+
+export type FirstResponseState = "met" | "late" | "pending" | "approaching" | "breached" | "untracked";
+
+/**
+ * Note "met" and "late" are distinct terminal states. Once we have replied
+ * the customer is no longer waiting, so it is not "breached" — but a
+ * manager still needs to see that it took too long, which a single "met"
+ * would hide.
+ */
+export function getFirstResponseState(params: {
+  firstRespondedAt?: Date | null;
+  firstResponseDueAt?: Date | null;
+  now?: Date;
+}): FirstResponseState {
+  if (!params.firstResponseDueAt) {
+    // Rows written before this feature existed. Not a breach.
+    return "untracked";
+  }
+
+  if (params.firstRespondedAt) {
+    return params.firstRespondedAt > params.firstResponseDueAt ? "late" : "met";
+  }
+
+  const now = params.now ?? new Date();
+  if (now > params.firstResponseDueAt) {
+    return "breached";
+  }
+
+  const remainingHours = (params.firstResponseDueAt.getTime() - now.getTime()) / 1000 / 60 / 60;
+  return remainingHours <= 1 ? "approaching" : "pending";
+}
+
 export function shouldEscalateTicket(params: {
   priority: TicketPriority;
   status: TicketStatus;

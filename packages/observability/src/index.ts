@@ -38,6 +38,7 @@ export type AuditAction =
   | "view.created"
   | "view.deleted"
   | "view.shared"
+  | "ticket.first_response_recorded"
   | "security.access_denied";
 
 export type AuditEventInput = {
