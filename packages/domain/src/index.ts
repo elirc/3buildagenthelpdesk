@@ -7,6 +7,7 @@ export * from "./jobs";
 export * from "./knowledge";
 export * from "./log-alerts";
 export * from "./logs";
+export * from "./notifications";
 export * from "./permissions";
 export * from "./routing";
 export * from "./saved-views";

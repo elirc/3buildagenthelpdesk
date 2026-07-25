@@ -66,6 +66,14 @@ export type AgentRunStatus = (typeof AGENT_RUN_STATUSES)[number];
 export const AGENT_TARGET_TYPES = ["TICKET", "INCIDENT", "LOG_GROUP", "JOB"] as const;
 export type AgentTargetType = (typeof AGENT_TARGET_TYPES)[number];
 
+export const NOTIFICATION_KINDS = [
+  "TICKET_STATUS_CHANGED",
+  "TICKET_COMMENT_ADDED",
+  "TICKET_ASSIGNED",
+  "INCIDENT_STATUS_CHANGED"
+] as const;
+export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
+
 export const ARTICLE_STATUSES = ["DRAFT", "PUBLISHED", "ARCHIVED"] as const;
 export type ArticleStatus = (typeof ARTICLE_STATUSES)[number];
 
@@ -125,6 +133,12 @@ export const labelMaps = {
     REPORT_GENERATION: "Report Generation",
     DATA_SYNC: "Data Sync",
     AGENT_RUN: "Agent Run"
+  },
+  notificationKind: {
+    TICKET_STATUS_CHANGED: "Ticket status changed",
+    TICKET_COMMENT_ADDED: "New comment",
+    TICKET_ASSIGNED: "Ticket assigned",
+    INCIDENT_STATUS_CHANGED: "Incident status changed"
   },
   articleStatus: {
     DRAFT: "Draft",

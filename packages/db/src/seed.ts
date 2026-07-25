@@ -17,6 +17,8 @@ async function reset() {
   await prisma.ticketComment.deleteMany();
   // After ticketComment: comments carry a nullable cannedReplyId, so the
   // templates cannot go first without tripping the foreign key.
+  await prisma.notification.deleteMany();
+  await prisma.watch.deleteMany();
   await prisma.ticketArticleLink.deleteMany();
   await prisma.knowledgeArticle.deleteMany();
   await prisma.cannedReply.deleteMany();

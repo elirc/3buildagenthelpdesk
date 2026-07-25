@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "@agentdesk/ui/styles.css";
 import { Badge } from "@agentdesk/ui";
 import { labelMaps } from "@agentdesk/shared";
+import { prisma } from "@agentdesk/db";
 import { getCurrentUser, getUsersForSwitcher, isDemoAuthEnabled } from "../lib/auth";
 import { setActiveUserAction } from "../lib/actions";
 
@@ -19,6 +20,7 @@ const navItems = [
   { href: "/logs", label: "Logs" },
   { href: "/jobs", label: "Jobs" },
   { href: "/agents", label: "Agent Runs" },
+  { href: "/notifications", label: "Notifications" },
   { href: "/knowledge", label: "Knowledge" },
   { href: "/analytics", label: "Analytics" },
   { href: "/audit", label: "Audit Events" },
@@ -28,6 +30,13 @@ const navItems = [
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
   const [currentUser, users] = await Promise.all([getCurrentUser(), getUsersForSwitcher()]);
   const demoAuth = isDemoAuthEnabled();
+
+  // A count, not a fetch. The badge needs a number, and loading every
+  // notification on every page render to produce one would be the same
+  // mistake the dashboard made before A1.
+  const unreadCount = currentUser
+    ? await prisma.notification.count({ where: { recipientId: currentUser.id, readAt: null } })
+    : 0;
 
   return (
     <html lang="en">
@@ -50,6 +59,11 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             <div className="topbar">
               {currentUser ? (
                 <>
+                  <a href="/notifications" className="bell">
+                    <Badge tone={unreadCount > 0 ? "warning" : "neutral"}>
+                      {unreadCount > 0 ? `${unreadCount} unread` : "No unread"}
+                    </Badge>
+                  </a>
                   <Badge tone="info">{labelMaps.role[currentUser.role]}</Badge>
                   <Badge>{currentUser.organization.slug}</Badge>
                   {demoAuth ? (
