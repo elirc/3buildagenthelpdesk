@@ -123,6 +123,7 @@ model Organization {
   auditEvents AuditEvent[]
   cannedReplies CannedReply[]
   ticketLinks TicketLink[]
+  savedViews  SavedView[]
   createdAt   DateTime        @default(now())
   updatedAt   DateTime        @updatedAt
 }
@@ -143,6 +144,7 @@ model User {
   agentRuns       AgentRun[]
   cannedReplies   CannedReply[]   @relation("CannedReplies")
   ticketLinks     TicketLink[]    @relation("TicketLinks")
+  savedViews      SavedView[]     @relation("SavedViews")
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
 
@@ -236,6 +238,28 @@ model WorkerHeartbeat {
   processedCount Int      @default(0)
   failedCount    Int      @default(0)
   startedAt      DateTime @default(now())
+}
+
+/// A named filter+sort combination, saved per user and optionally shared.
+///
+/// queryString holds a sanitised URLSearchParams, never the raw query the
+/// user was on. See sanitizeViewQuery: replaying arbitrary stored query
+/// strings is how a saved view turns into a redirect primitive.
+model SavedView {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  ownerId        String
+  owner          User         @relation("SavedViews", fields: [ownerId], references: [id])
+  name           String
+  resource       String
+  queryString    String
+  isShared       Boolean      @default(false)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@unique([ownerId, resource, name])
+  @@index([organizationId, resource])
 }
 
 enum TicketLinkType {

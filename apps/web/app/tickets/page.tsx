@@ -2,9 +2,9 @@ import type { Prisma } from "@prisma/client";
 import { Badge, Button, Card, DataTable, EmptyState, Field, PageHeader, PaginationControls, Select, SortableTh, TextInput } from "@agentdesk/ui";
 import { prisma } from "@agentdesk/db";
 import { labelMaps, TICKET_PRIORITIES, TICKET_STATUSES } from "@agentdesk/shared";
-import { canMutateTickets } from "@agentdesk/domain";
+import { canEditSavedView, canMutateTickets, describeViewQuery } from "@agentdesk/domain";
 import { slaTone, formatDateTime, priorityTone, ticketStatusTone } from "../../lib/format";
-import { bulkUpdateTicketsAction } from "../../lib/actions";
+import { bulkUpdateTicketsAction, createSavedViewAction, deleteSavedViewAction, toggleSavedViewSharedAction } from "../../lib/actions";
 import { requireCurrentUser } from "../../lib/auth";
 import {
   DEFAULT_TICKET_SORT,
@@ -61,7 +61,7 @@ export default async function TicketsPage({ searchParams }: { searchParams: Tick
   // triage queue wants.
   const orderBy = { [sort.key]: sort.direction } as Prisma.TicketOrderByWithRelationInput;
 
-  const [tickets, totalTickets, assignableUsers] = await Promise.all([
+  const [tickets, totalTickets, assignableUsers, savedViews] = await Promise.all([
     prisma.ticket.findMany({
       where,
       include: { assignedUser: true, assignedTeam: true, incident: true },
@@ -70,11 +70,27 @@ export default async function TicketsPage({ searchParams }: { searchParams: Tick
       take: pagination.take
     }),
     prisma.ticket.count({ where }),
-    prisma.user.findMany({ where: { organizationId: currentUser.organizationId }, orderBy: { name: "asc" } })
+    prisma.user.findMany({ where: { organizationId: currentUser.organizationId }, orderBy: { name: "asc" } }),
+    // Your own views, plus anything a colleague chose to share.
+    prisma.savedView.findMany({
+      where: {
+        organizationId: currentUser.organizationId,
+        resource: "tickets",
+        OR: [{ ownerId: currentUser.id }, { isShared: true }]
+      },
+      include: { owner: true },
+      orderBy: { name: "asc" }
+    })
   ]);
 
   const pages = totalPages(totalTickets, pagination.pageSize);
   const writable = canMutateTickets(currentUser.role);
+
+  // The filters currently applied, as a query string, so "Save this view"
+  // captures what the user is actually looking at.
+  const currentQuery = new URLSearchParams(
+    Object.entries(searchParams).filter(([, value]) => Boolean(value)) as [string, string][]
+  ).toString();
   const columnHref = (key: TicketSortKey) => sortHref("/tickets", searchParams, sort, key);
 
   return (
@@ -87,7 +103,48 @@ export default async function TicketsPage({ searchParams }: { searchParams: Tick
         <p>Customer issues with controlled status transitions, SLA visibility, linked incidents, and agent summaries.</p>
       </PageHeader>
 
-      <Card>
+      <Card title="Saved Views">
+        {savedViews.length === 0 ? (
+          <p className="muted">No saved views yet. Apply some filters below, then save them under a name.</p>
+        ) : (
+          <div className="pill-list">
+            {savedViews.map((view) => (
+              <span key={view.id} className="saved-view">
+                <a href={view.queryString ? `/tickets?${view.queryString}` : "/tickets"}>{view.name}</a>
+                <span className="muted"> — {describeViewQuery(view.queryString)}</span>
+                {view.isShared ? <Badge tone="info">Shared</Badge> : null}
+                {view.ownerId !== currentUser.id ? <span className="muted"> by {view.owner.name}</span> : null}
+                {canEditSavedView(currentUser, view) ? (
+                  <>
+                    <form action={toggleSavedViewSharedAction} style={{ display: "inline" }}>
+                      <input type="hidden" name="viewId" value={view.id} />
+                      <Button type="submit">{view.isShared ? "Unshare" : "Share"}</Button>
+                    </form>
+                    <form action={deleteSavedViewAction} style={{ display: "inline" }}>
+                      <input type="hidden" name="viewId" value={view.id} />
+                      <Button type="submit" variant="danger">Delete</Button>
+                    </form>
+                  </>
+                ) : null}
+              </span>
+            ))}
+          </div>
+        )}
+
+        <form action={createSavedViewAction} className="filter-bar" style={{ marginTop: 12 }}>
+          <input type="hidden" name="resource" value="tickets" />
+          <input type="hidden" name="queryString" value={currentQuery} />
+          <Field label="Save current filters as">
+            <TextInput name="name" placeholder="My critical tickets" required />
+          </Field>
+          <label>
+            <input type="checkbox" name="isShared" /> Share with my team
+          </label>
+          <Button type="submit">Save View</Button>
+        </form>
+      </Card>
+
+      <Card className="mt">
         <form className="filter-bar">
           <Field label="Search">
             <TextInput name="q" defaultValue={searchParams.q} placeholder="Customer, title, requester" />
