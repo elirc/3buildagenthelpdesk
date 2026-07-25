@@ -1,10 +1,13 @@
 import { Badge, Card, DataTable, EmptyState, PageHeader, Select, Button, Field, TextArea, TextInput } from "@agentdesk/ui";
 import { prisma } from "@agentdesk/db";
 import { labelMaps, TICKET_CATEGORIES } from "@agentdesk/shared";
-import { CANNED_REPLY_VARIABLES, extractVariables, hasCapability } from "@agentdesk/domain";
+import { API_SCOPES, CANNED_REPLY_VARIABLES, extractVariables, hasCapability, isApiKeyUsable } from "@agentdesk/domain";
 import { getAuthProviderName, getCurrentUser, getUsersForSwitcher, isDemoAuthEnabled } from "../../lib/auth";
+import { formatDateTime } from "../../lib/format";
 import {
+  createApiKeyAction,
   createCannedReplyAction,
+  revokeApiKeyAction,
   updateBusinessCalendarAction,
   deactivateCannedReplyAction,
   setActiveUserAction
@@ -21,7 +24,7 @@ function DescriptionListFallback(props: { start: string; end: string; days: stri
   );
 }
 
-export default async function SettingsPage() {
+export default async function SettingsPage({ searchParams }: { searchParams: { newKey?: string } }) {
   const [currentUser, users] = await Promise.all([getCurrentUser(), getUsersForSwitcher()]);
   const demoAuth = isDemoAuthEnabled();
 
@@ -43,6 +46,13 @@ export default async function SettingsPage() {
     `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
   const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
   const activeDays = calendar?.workdays ?? [1, 2, 3, 4, 5];
+
+  const apiKeys = currentUser
+    ? await prisma.apiKey.findMany({
+        where: { organizationId: currentUser.organizationId },
+        orderBy: [{ revokedAt: "asc" }, { createdAt: "desc" }]
+      })
+    : [];
 
   return (
     <>
@@ -92,6 +102,100 @@ export default async function SettingsPage() {
           </DataTable>
         </Card>
       </div>
+
+      <Card title="API Keys" className="mt">
+        <p className="muted">
+          Read-only access to <code>/api/v1/tickets</code> and <code>/api/v1/incidents</code>. Send the key as{" "}
+          <code>Authorization: Bearer &lt;key&gt;</code>. Keys are stored hashed, so a lost key cannot be recovered —
+          revoke it and issue another.
+        </p>
+
+        {searchParams.newKey ? (
+          <Card title="Copy this key now">
+            <p className="text-danger">
+              This is the only time the key will be shown. It is not stored in a recoverable form.
+            </p>
+            <pre className="json-block">{searchParams.newKey}</pre>
+            <p className="muted">
+              Note it is currently in this page&apos;s URL and therefore in your browser history — navigate away once
+              you have copied it.
+            </p>
+          </Card>
+        ) : null}
+
+        {apiKeys.length === 0 ? (
+          <EmptyState title="No API keys">Integrations have no way in until a key is issued.</EmptyState>
+        ) : (
+          <DataTable>
+            <thead>
+              <tr>
+                <th scope="col">Name</th>
+                <th scope="col">Prefix</th>
+                <th scope="col">Scopes</th>
+                <th scope="col">Requests</th>
+                <th scope="col">Last Used</th>
+                <th scope="col">Status</th>
+                {canManageReplies ? <th scope="col">Manage</th> : null}
+              </tr>
+            </thead>
+            <tbody>
+              {apiKeys.map((key) => {
+                const usable = isApiKeyUsable(key);
+                return (
+                  <tr key={key.id}>
+                    <td>{key.name}</td>
+                    <td className="muted">{key.keyPrefix}…</td>
+                    <td className="muted">{key.scopes.join(", ")}</td>
+                    <td>{key.requestCount}</td>
+                    <td>{key.lastUsedAt ? formatDateTime(key.lastUsedAt) : <span className="muted">Never</span>}</td>
+                    <td>
+                      <Badge tone={usable ? "success" : "neutral"}>
+                        {key.revokedAt ? "Revoked" : usable ? "Active" : "Expired"}
+                      </Badge>
+                    </td>
+                    {canManageReplies ? (
+                      <td>
+                        {usable ? (
+                          <form action={revokeApiKeyAction}>
+                            <input type="hidden" name="apiKeyId" value={key.id} />
+                            <Button type="submit" variant="danger">Revoke</Button>
+                          </form>
+                        ) : (
+                          <span className="muted">—</span>
+                        )}
+                      </td>
+                    ) : null}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </DataTable>
+        )}
+
+        {canManageReplies ? (
+          <form action={createApiKeyAction} className="form-grid" style={{ marginTop: 16 }}>
+            <div className="form-grid form-grid--2">
+              <Field label="Name">
+                <TextInput name="name" required placeholder="Ops dashboard" />
+              </Field>
+              <Field label="Expires in days" hint="Leave blank for no expiry.">
+                <TextInput name="expiresInDays" type="number" placeholder="90" />
+              </Field>
+            </div>
+            <Field label="Scopes">
+              <span className="pill-list">
+                {API_SCOPES.map((scope) => (
+                  <label key={scope} className="saved-view">
+                    <input type="checkbox" name="scopes" value={scope} defaultChecked={scope === "read:tickets"} />{" "}
+                    {scope}
+                  </label>
+                ))}
+              </span>
+            </Field>
+            <Button type="submit" variant="primary">Create API Key</Button>
+          </form>
+        ) : null}
+      </Card>
 
       <Card title="Routing Rules" className="mt" actions={<Button href="/settings/routing">Manage Routing</Button>}>
         <p className="muted">

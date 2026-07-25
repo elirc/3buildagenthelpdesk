@@ -36,6 +36,8 @@ export type AuditAction =
   | "canned_reply.updated"
   | "canned_reply.deactivated"
   | "calendar.updated"
+  | "api_key.created"
+  | "api_key.revoked"
   | "routing_rule.created"
   | "routing_rule.updated"
   | "routing_rule.deleted"

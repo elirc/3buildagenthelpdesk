@@ -126,6 +126,7 @@ model Organization {
   savedViews  SavedView[]
   businessCalendar BusinessCalendar?
   routingRules RoutingRule[]
+  apiKeys     ApiKey[]
   createdAt   DateTime        @default(now())
   updatedAt   DateTime        @updatedAt
 }
@@ -148,6 +149,7 @@ model User {
   ticketLinks     TicketLink[]    @relation("TicketLinks")
   savedViews      SavedView[]     @relation("SavedViews")
   routedRules     RoutingRule[]   @relation("RoutedUser")
+  apiKeys         ApiKey[]        @relation("ApiKeys")
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
 
@@ -290,6 +292,31 @@ model BusinessCalendar {
   workdays           Int[]        @default([1, 2, 3, 4, 5])
   holidays           DateTime[]   @default([])
   updatedAt          DateTime     @updatedAt
+}
+
+/// A hashed API credential.
+///
+/// keyHash is a SHA-256 of the full key; the key itself is never stored,
+/// so a database dump does not hand over working credentials. keyPrefix is
+/// the first characters, kept in the clear purely so a human can tell two
+/// keys apart in the UI.
+model ApiKey {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  name           String
+  keyPrefix      String       @unique
+  keyHash        String
+  scopes         String[]     @default(["read:tickets"])
+  createdById    String?
+  createdBy      User?        @relation("ApiKeys", fields: [createdById], references: [id])
+  lastUsedAt     DateTime?
+  requestCount   Int          @default(0)
+  expiresAt      DateTime?
+  revokedAt      DateTime?
+  createdAt      DateTime     @default(now())
+
+  @@index([organizationId, revokedAt])
 }
 
 enum RoutingConditionField {
