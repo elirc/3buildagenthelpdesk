@@ -1,6 +1,7 @@
-import { Badge, Button, Card, DataTable, Field, PageHeader, Select } from "@agentdesk/ui";
+import { Badge, Button, Card, DataTable, EmptyState, Field, Metric, PageHeader, Select } from "@agentdesk/ui";
 import { prisma } from "@agentdesk/db";
 import { JOB_STATUSES, JOB_TYPES, labelMaps } from "@agentdesk/shared";
+import { JOB_LEASE_MS, workerHealth } from "@agentdesk/domain";
 import { formatDateTime } from "../../lib/format";
 import { requireCurrentUser } from "../../lib/auth";
 import { pageHref, parsePagination } from "../../lib/pagination";
@@ -26,7 +27,9 @@ export default async function JobsPage({
       status: searchParams.status ? (searchParams.status as never) : undefined,
       type: searchParams.type ? (searchParams.type as never) : undefined
     };
-  const [jobs, totalJobs] = await Promise.all([
+  const leaseCutoff = new Date(Date.now() - JOB_LEASE_MS);
+
+  const [jobs, totalJobs, workers, expiredLeaseCount] = await Promise.all([
     prisma.backgroundJob.findMany({
     where,
     include: {
@@ -37,7 +40,16 @@ export default async function JobsPage({
     skip: pagination.skip,
     take: pagination.take
   }),
-    prisma.backgroundJob.count({ where })
+    prisma.backgroundJob.count({ where }),
+    // Workers are processes, not tenants — a worker drains the whole queue,
+    // so this list is deliberately not organization-scoped. It exposes no
+    // customer data, only process names and counters.
+    prisma.workerHeartbeat.findMany({ orderBy: { lastSeenAt: "desc" }, take: 10 }),
+    // Jobs stuck RUNNING past their lease. Should be 0 whenever a worker is
+    // alive, because the worker reclaims them before each claim.
+    prisma.backgroundJob.count({
+      where: { organizationId: currentUser.organizationId, status: "RUNNING", lockedAt: { lt: leaseCutoff } }
+    })
   ]);
 
   return (
@@ -46,7 +58,67 @@ export default async function JobsPage({
         <p>Queue-style job monitoring for retries, dead-letter review, and deterministic failed job investigation.</p>
       </PageHeader>
 
-      <Card>
+      <Card title="Worker Health">
+        {workers.length === 0 ? (
+          <EmptyState title="No worker has ever reported in">
+            Queued jobs will sit untouched until someone runs <code>npm run worker</code>. Agent runs in particular
+            stay PENDING for ever with nothing on screen explaining why.
+          </EmptyState>
+        ) : (
+          <>
+            <div className="grid grid--3">
+              <Metric
+                label="Workers Seen"
+                value={workers.length}
+                tone={workers.some((w) => workerHealth(w) === "healthy") ? "success" : "danger"}
+              />
+              <Metric
+                label="Expired Leases"
+                value={expiredLeaseCount}
+                tone={expiredLeaseCount > 0 ? "warning" : "success"}
+              />
+              <Metric label="Jobs Processed" value={workers.reduce((sum, w) => sum + w.processedCount, 0)} tone="info" />
+            </div>
+            <DataTable>
+              <thead>
+                <tr>
+                  <th scope="col">Worker</th>
+                  <th scope="col">Health</th>
+                  <th scope="col">Last Seen</th>
+                  <th scope="col">Processed</th>
+                  <th scope="col">Failed</th>
+                </tr>
+              </thead>
+              <tbody>
+                {workers.map((worker) => {
+                  const health = workerHealth(worker);
+                  return (
+                    <tr key={worker.id}>
+                      <td>{worker.workerId}</td>
+                      <td>
+                        <Badge tone={health === "healthy" ? "success" : health === "stale" ? "warning" : "danger"}>
+                          {health}
+                        </Badge>
+                      </td>
+                      <td>{formatDateTime(worker.lastSeenAt)}</td>
+                      <td>{worker.processedCount}</td>
+                      <td>{worker.failedCount}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </DataTable>
+          </>
+        )}
+        {expiredLeaseCount > 0 ? (
+          <p className="text-danger">
+            {expiredLeaseCount} job(s) are stuck past their lease. A worker died mid-job; the next worker poll will
+            return them to the queue.
+          </p>
+        ) : null}
+      </Card>
+
+      <Card className="mt">
         <form className="filter-bar">
           <Field label="Status">
             <Select name="status" defaultValue={searchParams.status ?? ""}>
