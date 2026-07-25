@@ -11,6 +11,7 @@ import {
   assertTicketTransition,
   calculateSlaDueAt,
   cannedReplySchema,
+  canEditSavedView,
   canRetryJob,
   createIncidentSchema,
   createTicketSchema,
@@ -20,6 +21,9 @@ import {
   planBulkStatusChange,
   normalizeTags,
   requireCapability,
+  sanitizeViewQuery,
+  savedViewSchema,
+  type SavedViewResource,
   validateTicketLink,
   TICKET_LINK_TYPES,
   type TicketLinkType,
@@ -1038,4 +1042,110 @@ export async function runDuplicateDetectionAction(formData: FormData) {
 
   revalidatePath(`/tickets/${ticketId}`);
   redirect(`/agents/${run.id}`);
+}
+
+/* -------------------------------------------------------------------------
+ * Saved views
+ * ---------------------------------------------------------------------- */
+
+export async function createSavedViewAction(formData: FormData) {
+  const { user, requestContext } = await requireActionUser("view.create", "ticket:update");
+
+  const resource = stringValue(formData, "resource") as SavedViewResource;
+  const parsed = savedViewSchema.parse({
+    name: stringValue(formData, "name"),
+    resource,
+    // Sanitise before validating: the raw string is whatever the user was
+    // looking at, and only the allowlisted part of it is ours to keep.
+    queryString: sanitizeViewQuery(resource, stringValue(formData, "queryString")),
+    isShared: formData.get("isShared") === "on"
+  });
+
+  const existing = await prisma.savedView.findFirst({
+    where: { ownerId: user.id, resource: parsed.resource, name: parsed.name },
+    select: { id: true }
+  });
+  if (existing) {
+    throw new ActionError(`You already have a view named "${parsed.name}" for ${parsed.resource}.`);
+  }
+
+  const view = await prisma.savedView.create({
+    data: {
+      organizationId: user.organizationId,
+      ownerId: user.id,
+      name: parsed.name,
+      resource: parsed.resource,
+      queryString: parsed.queryString,
+      isShared: parsed.isShared
+    }
+  });
+
+  await writeAuditEvent({
+    organizationId: user.organizationId,
+    actorUserId: user.id,
+    action: "view.created",
+    entityType: "SavedView",
+    entityId: view.id,
+    after: { name: view.name, resource: view.resource, isShared: view.isShared, queryString: view.queryString },
+    metadata: { actorRole: user.role },
+    requestContextId: requestContext.requestContextId
+  });
+
+  revalidatePath(`/${parsed.resource}`);
+}
+
+export async function deleteSavedViewAction(formData: FormData) {
+  const { user, requestContext } = await requireActionUser("view.delete", "ticket:update");
+
+  const viewId = stringValue(formData, "viewId");
+  const view = await prisma.savedView.findFirst({ where: { id: viewId, organizationId: user.organizationId } });
+  assertCanAccessRecord(user, view, "Saved view");
+
+  // Org membership is not enough — a shared view still belongs to whoever
+  // made it, so a colleague cannot delete what the team depends on.
+  if (!canEditSavedView(user, view)) {
+    throw new ActionError("Only the owner of a view can delete it.");
+  }
+
+  await prisma.savedView.delete({ where: { id: viewId } });
+
+  await writeAuditEvent({
+    organizationId: user.organizationId,
+    actorUserId: user.id,
+    action: "view.deleted",
+    entityType: "SavedView",
+    entityId: viewId,
+    before: { name: view.name, resource: view.resource, isShared: view.isShared },
+    metadata: { actorRole: user.role },
+    requestContextId: requestContext.requestContextId
+  });
+
+  revalidatePath(`/${view.resource}`);
+}
+
+export async function toggleSavedViewSharedAction(formData: FormData) {
+  const { user, requestContext } = await requireActionUser("view.share", "ticket:update");
+
+  const viewId = stringValue(formData, "viewId");
+  const view = await prisma.savedView.findFirst({ where: { id: viewId, organizationId: user.organizationId } });
+  assertCanAccessRecord(user, view, "Saved view");
+  if (!canEditSavedView(user, view)) {
+    throw new ActionError("Only the owner of a view can share it.");
+  }
+
+  const after = await prisma.savedView.update({ where: { id: viewId }, data: { isShared: !view.isShared } });
+
+  await writeAuditEvent({
+    organizationId: user.organizationId,
+    actorUserId: user.id,
+    action: "view.shared",
+    entityType: "SavedView",
+    entityId: viewId,
+    before: { isShared: view.isShared },
+    after: { isShared: after.isShared },
+    metadata: { actorRole: user.role },
+    requestContextId: requestContext.requestContextId
+  });
+
+  revalidatePath(`/${view.resource}`);
 }
