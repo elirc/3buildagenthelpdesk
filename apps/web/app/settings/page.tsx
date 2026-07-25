@@ -5,11 +5,21 @@ import { CANNED_REPLY_VARIABLES, extractVariables, hasCapability } from "@agentd
 import { getAuthProviderName, getCurrentUser, getUsersForSwitcher, isDemoAuthEnabled } from "../../lib/auth";
 import {
   createCannedReplyAction,
+  updateBusinessCalendarAction,
   deactivateCannedReplyAction,
   setActiveUserAction
 } from "../../lib/actions";
 
 export const dynamic = "force-dynamic";
+
+/** Read-only view for roles that cannot edit the calendar. */
+function DescriptionListFallback(props: { start: string; end: string; days: string }) {
+  return (
+    <p className="muted">
+      {props.days} &middot; {props.start}&ndash;{props.end} UTC. Your role cannot change these.
+    </p>
+  );
+}
 
 export default async function SettingsPage() {
   const [currentUser, users] = await Promise.all([getCurrentUser(), getUsersForSwitcher()]);
@@ -25,6 +35,14 @@ export default async function SettingsPage() {
       })
     : [];
   const canManageReplies = currentUser ? hasCapability(currentUser.role, "canned_reply:manage") : false;
+
+  const calendar = currentUser
+    ? await prisma.businessCalendar.findUnique({ where: { organizationId: currentUser.organizationId } })
+    : null;
+  const minutesToTime = (minutes: number) =>
+    `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+  const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const activeDays = calendar?.workdays ?? [1, 2, 3, 4, 5];
 
   return (
     <>
@@ -74,6 +92,55 @@ export default async function SettingsPage() {
           </DataTable>
         </Card>
       </div>
+
+      <Card title="Business Hours" className="mt">
+        <p className="muted">
+          When set, SLA and first-response deadlines for LOW, MEDIUM and HIGH tickets count only working hours, so a
+          ticket raised on Friday evening is not already late by Monday. CRITICAL always uses elapsed time — an outage
+          does not wait for Monday. With no calendar configured, every priority uses elapsed time.
+        </p>
+
+        {calendar ? null : <p className="muted">No calendar configured; showing the defaults.</p>}
+
+        {canManageReplies ? (
+          <form action={updateBusinessCalendarAction} className="form-grid">
+            <div className="form-grid form-grid--2">
+              <Field label="Workday Start">
+                <TextInput name="workdayStart" type="time" defaultValue={minutesToTime(calendar?.workdayStartMinute ?? 540)} />
+              </Field>
+              <Field label="Workday End">
+                <TextInput name="workdayEnd" type="time" defaultValue={minutesToTime(calendar?.workdayEndMinute ?? 1020)} />
+              </Field>
+            </div>
+            <Field label="Working Days">
+              <span className="pill-list">
+                {DAY_NAMES.map((name, index) => (
+                  <label key={name} className="saved-view">
+                    <input type="checkbox" name="workdays" value={index} defaultChecked={activeDays.includes(index)} />{" "}
+                    {name.slice(0, 3)}
+                  </label>
+                ))}
+              </span>
+            </Field>
+            <Field label="Holidays" hint="Comma-separated ISO dates, e.g. 2026-12-25, 2026-12-26">
+              <TextInput
+                name="holidays"
+                defaultValue={(calendar?.holidays ?? []).map((d) => d.toISOString().slice(0, 10)).join(", ")}
+              />
+            </Field>
+            <Field label="Timezone" hint="Stored for future use; all arithmetic is currently UTC.">
+              <TextInput name="timezone" defaultValue={calendar?.timezone ?? "UTC"} />
+            </Field>
+            <Button type="submit" variant="primary">Save Business Hours</Button>
+          </form>
+        ) : (
+          <DescriptionListFallback
+            start={minutesToTime(calendar?.workdayStartMinute ?? 540)}
+            end={minutesToTime(calendar?.workdayEndMinute ?? 1020)}
+            days={activeDays.map((day) => DAY_NAMES[day]).join(", ")}
+          />
+        )}
+      </Card>
 
       <Card title="Reply Templates" className="mt">
         <p className="muted">
