@@ -213,6 +213,57 @@ export function canResolveTickets(role: UserRole): boolean {
   return role === "ADMIN" || role === "SUPPORT_AGENT" || role === "ENGINEERING";
 }
 
+/* -------------------------------------------------------------------------
+ * Bulk triage
+ *
+ * A morning triage pass touches twenty tickets. Some of them will refuse
+ * the requested transition — a CLOSED ticket cannot go back to TRIAGE — and
+ * the interesting design question is what to do about the other eighteen.
+ *
+ * This plans best-effort: apply what is legal, report what is not. The
+ * alternative, all-or-nothing, means one closed ticket in a selection of
+ * twenty blocks the whole batch and the agent has to hunt for the offender.
+ * That is the correct choice for a *financial* transaction and the wrong
+ * one for a triage queue, where the operations are independent.
+ * ---------------------------------------------------------------------- */
+
+/** Guard rail on a single submission, so one selection cannot lock the table. */
+export const MAX_BULK_TICKETS = 200;
+
+export type BulkTransitionPlan = {
+  applied: string[];
+  rejected: Array<{ ticketId: string; reason: string }>;
+};
+
+/**
+ * Split a selection into the tickets that may take the target status and
+ * those that may not. Pure: it is handed current statuses and returns a
+ * plan. Executing the plan is the action's job.
+ */
+export function planBulkStatusChange(
+  tickets: Array<{ id: string; status: TicketStatus }>,
+  target: TicketStatus
+): BulkTransitionPlan {
+  const applied: string[] = [];
+  const rejected: Array<{ ticketId: string; reason: string }> = [];
+
+  for (const ticket of tickets) {
+    if (ticket.status === target) {
+      // Not an error, but not work either. Skipping keeps the audit log
+      // free of "changed X to X" entries that mean nothing.
+      rejected.push({ ticketId: ticket.id, reason: `Already ${target}` });
+      continue;
+    }
+    if (canTransitionTicket(ticket.status, target)) {
+      applied.push(ticket.id);
+    } else {
+      rejected.push({ ticketId: ticket.id, reason: `Cannot move from ${ticket.status} to ${target}` });
+    }
+  }
+
+  return { applied, rejected };
+}
+
 export function normalizeTags(raw: string | string[] | undefined): string[] {
   if (!raw) {
     return [];
