@@ -71,6 +71,7 @@ enum LogLevel {
 }
 
 enum JobType {
+  LOG_ALERT_EVALUATION
   EMAIL_NOTIFICATION
   WEBHOOK_DELIVERY
   SLA_ESCALATION
@@ -127,6 +128,7 @@ model Organization {
   businessCalendar BusinessCalendar?
   routingRules RoutingRule[]
   apiKeys     ApiKey[]
+  logAlertRules LogAlertRule[]
   createdAt   DateTime        @default(now())
   updatedAt   DateTime        @updatedAt
 }
@@ -294,6 +296,34 @@ model BusinessCalendar {
   updatedAt          DateTime     @updatedAt
 }
 
+/// A watch on the log stream that can open an incident by itself.
+model LogAlertRule {
+  id               String           @id @default(cuid())
+  organizationId   String
+  organization     Organization     @relation(fields: [organizationId], references: [id])
+  name             String
+  service          String?
+  environment      LogEnvironment?
+  level            LogLevel?
+  fingerprint      String?
+  thresholdCount   Int              @default(5)
+  windowMinutes    Int              @default(15)
+  minAnomalyScore  Int              @default(70)
+  action           String           @default("NOTIFY_ONLY")
+  incidentSeverity IncidentSeverity @default(SEV3)
+  // Without a cooldown a persistent condition re-fires on every evaluation
+  // and buries the incident it already opened.
+  cooldownMinutes  Int              @default(60)
+  isActive         Boolean          @default(true)
+  lastFiredAt      DateTime?
+  fireCount        Int              @default(0)
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  @@unique([organizationId, name])
+  @@index([organizationId, isActive])
+}
+
 /// A hashed API credential.
 ///
 /// keyHash is a SHA-256 of the full key; the key itself is never stored,
@@ -428,6 +458,8 @@ model Incident {
   logs            StructuredLog[]
   jobs            BackgroundJob[]
   agentFindings   Json?
+  /// Set when an alert rule opened this incident rather than a human.
+  createdByRuleId String?
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
 

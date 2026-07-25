@@ -197,6 +197,13 @@ export default async function SettingsPage({ searchParams }: { searchParams: { n
         ) : null}
       </Card>
 
+      <Card title="Log Alert Rules" className="mt" actions={<Button href="/settings/alerts">Manage Alerts</Button>}>
+        <p className="muted">
+          Watch the log stream and open an incident automatically when a failure signature crosses a threshold. Runs
+          as a self-rescheduling background job, so it only progresses while the worker is running.
+        </p>
+      </Card>
+
       <Card title="Routing Rules" className="mt" actions={<Button href="/settings/routing">Manage Routing</Button>}>
         <p className="muted">
           Assign new tickets automatically based on category, tags, requester domain or free text. Rules run in order;

@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { getAgentDefinition, runRegisteredAgent } from "@agentdesk/agents";
-import { JOB_LEASE_MS, nextRunAt } from "@agentdesk/domain";
-import { redactSensitiveMetadata } from "@agentdesk/observability";
+import { JOB_LEASE_MS, autoIncidentTitle, evaluateLogAlertRule, nextRunAt } from "@agentdesk/domain";
+import { redactSensitiveMetadata, scoreLogAnomaly } from "@agentdesk/observability";
 import type { AgentTargetType, AgentType } from "@agentdesk/shared";
 import { prisma } from "./index";
 
@@ -141,6 +141,8 @@ export async function processNextBackgroundJob(workerId = `worker-${process.pid}
   try {
     if (job.type === "AGENT_RUN") {
       await processAgentRunJob(job);
+    } else if (job.type === "LOG_ALERT_EVALUATION") {
+      await processLogAlertEvaluation(job);
     } else {
       await processDemoJob(job);
     }
@@ -279,6 +281,147 @@ async function processAgentRunJob(job: { id: string; organizationId: string; pay
     });
     throw error;
   }
+}
+
+/**
+ * Evaluate every active log alert rule for one organization.
+ *
+ * Self-rescheduling: the job enqueues its successor before returning, using
+ * the runAt column added in D1. That is how a periodic task exists in an
+ * app with no scheduler — the queue becomes the timer. The reschedule
+ * happens even on the failure path, or one bad evaluation would silently
+ * end the loop for ever.
+ */
+export async function processLogAlertEvaluation(job: {
+  id: string;
+  organizationId: string;
+  payload: Prisma.JsonValue;
+  requestContextId: string | null;
+}) {
+  const payload = (job.payload ?? {}) as Record<string, unknown>;
+  const intervalMinutes = typeof payload.intervalMinutes === "number" ? payload.intervalMinutes : 5;
+
+  try {
+    const rules = await prisma.logAlertRule.findMany({
+      where: { organizationId: job.organizationId, isActive: true }
+    });
+
+    for (const rule of rules) {
+      const since = new Date(Date.now() - rule.windowMinutes * 60_000);
+      const where = {
+        organizationId: job.organizationId,
+        timestamp: { gte: since },
+        ...(rule.service ? { service: rule.service } : {}),
+        ...(rule.environment ? { environment: rule.environment } : {}),
+        ...(rule.level ? { level: rule.level } : {}),
+        ...(rule.fingerprint ? { fingerprint: rule.fingerprint } : {})
+      };
+
+      const logs = await prisma.structuredLog.findMany({ where, orderBy: { timestamp: "desc" }, take: 200 });
+      // Reuse the existing anomaly agent rather than inventing a second
+      // definition of "how bad is this". One scoring rule, one place.
+      const scored = logs.length > 0 ? scoreLogAnomaly(logs) : { score: 0, reasons: [] };
+
+      const decision = evaluateLogAlertRule({
+        rule,
+        matchedCount: logs.length,
+        anomalyScore: scored.score
+      });
+
+      if (!decision.shouldFire) continue;
+
+      let incidentId: string | null = null;
+      if (rule.action === "CREATE_INCIDENT") {
+        // Do not open a second incident for a condition that already has
+        // one open. Cooldown alone would not prevent this after a restart.
+        const existing = await prisma.incident.findFirst({
+          where: {
+            organizationId: job.organizationId,
+            createdByRuleId: rule.id,
+            status: { not: "RESOLVED" }
+          }
+        });
+
+        if (!existing) {
+          const incident = await prisma.incident.create({
+            data: {
+              organizationId: job.organizationId,
+              title: autoIncidentTitle(rule.name, rule.service),
+              description: `Opened automatically by the "${rule.name}" alert rule. ${decision.reason} ${scored.reasons.join(" ")}`.trim(),
+              status: "INVESTIGATING",
+              severity: rule.incidentSeverity,
+              affectedService: rule.service ?? "multiple-services",
+              createdByRuleId: rule.id
+            }
+          });
+          incidentId = incident.id;
+
+          // Attach the evidence, so the incident opens with the logs that
+          // caused it rather than requiring someone to go and find them.
+          await prisma.structuredLog.updateMany({
+            where: { id: { in: logs.map((log) => log.id) } },
+            data: { incidentId: incident.id }
+          });
+        } else {
+          incidentId = existing.id;
+        }
+      }
+
+      await prisma.logAlertRule.update({
+        where: { id: rule.id },
+        data: { lastFiredAt: new Date(), fireCount: { increment: 1 } }
+      });
+
+      await prisma.auditEvent.create({
+        data: {
+          organizationId: job.organizationId,
+          action: incidentId ? "incident.auto_created" : "alert_rule.fired",
+          entityType: incidentId ? "Incident" : "LogAlertRule",
+          entityId: incidentId ?? rule.id,
+          after: redactSensitiveMetadata({
+            ruleId: rule.id,
+            ruleName: rule.name,
+            matchedCount: decision.matchedCount,
+            anomalyScore: scored.score,
+            action: rule.action
+          }) as Prisma.InputJsonValue,
+          requestContextId: job.requestContextId
+        }
+      });
+
+      logWorkerEvent({
+        event: "alert_rule.fired",
+        ruleId: rule.id,
+        ruleName: rule.name,
+        matchedCount: decision.matchedCount,
+        anomalyScore: scored.score,
+        incidentId
+      });
+    }
+  } finally {
+    await scheduleNextLogAlertEvaluation(job.organizationId, intervalMinutes);
+  }
+}
+
+/** Enqueue the next evaluation, unless one is already waiting. */
+export async function scheduleNextLogAlertEvaluation(organizationId: string, intervalMinutes = 5) {
+  const pending = await prisma.backgroundJob.findFirst({
+    where: { organizationId, type: "LOG_ALERT_EVALUATION", status: { in: ["QUEUED", "RETRYING", "RUNNING"] } }
+  });
+  // Without this guard, a manual "evaluate now" alongside the running loop
+  // doubles the number of evaluators, and it never comes back down.
+  if (pending) return pending;
+
+  return prisma.backgroundJob.create({
+    data: {
+      organizationId,
+      type: "LOG_ALERT_EVALUATION",
+      status: "QUEUED",
+      maxAttempts: 1,
+      payload: { intervalMinutes },
+      runAt: new Date(Date.now() + intervalMinutes * 60_000)
+    }
+  });
 }
 
 async function processDemoJob(job: { type: string; errorMessage: string | null }) {

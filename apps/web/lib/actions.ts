@@ -6,6 +6,7 @@ import { redirect } from "next/navigation";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@agentdesk/db";
 import { getAgentDefinition, runRegisteredAgent } from "@agentdesk/agents";
+import { scheduleNextLogAlertEvaluation } from "@agentdesk/db/worker";
 import {
   applySlaPauseTransition,
   assertIncidentTransition,
@@ -29,6 +30,7 @@ import {
   API_SCOPES,
   evaluateRoutingRules,
   generateApiKey,
+  logAlertRuleSchema,
   requireCapability,
   routingRuleSchema,
   type EvaluableRule,
@@ -1840,4 +1842,174 @@ export async function revokeApiKeyAction(formData: FormData) {
   });
 
   revalidatePath("/settings");
+}
+
+/* -------------------------------------------------------------------------
+ * Log alert rules
+ * ---------------------------------------------------------------------- */
+
+export async function createLogAlertRuleAction(formData: FormData) {
+  const { user, requestContext } = await requireActionUser("alert_rule.create", "canned_reply:manage");
+
+  const parsed = logAlertRuleSchema.parse({
+    name: stringValue(formData, "name"),
+    service: optionalStringValue(formData, "service"),
+    environment: optionalStringValue(formData, "environment"),
+    level: optionalStringValue(formData, "level"),
+    fingerprint: optionalStringValue(formData, "fingerprint"),
+    thresholdCount: stringValue(formData, "thresholdCount") || 5,
+    windowMinutes: stringValue(formData, "windowMinutes") || 15,
+    minAnomalyScore: stringValue(formData, "minAnomalyScore") || 70,
+    action: stringValue(formData, "action") || "NOTIFY_ONLY",
+    incidentSeverity: stringValue(formData, "incidentSeverity") || "SEV3",
+    cooldownMinutes: stringValue(formData, "cooldownMinutes") || 60,
+    isActive: formData.get("isActive") !== "off"
+  });
+
+  const existing = await prisma.logAlertRule.findFirst({
+    where: { organizationId: user.organizationId, name: parsed.name },
+    select: { id: true }
+  });
+  if (existing) {
+    throw new ActionError(`An alert rule named "${parsed.name}" already exists.`);
+  }
+
+  const rule = await prisma.logAlertRule.create({
+    data: {
+      organizationId: user.organizationId,
+      name: parsed.name,
+      service: parsed.service ?? null,
+      environment: parsed.environment ?? null,
+      level: parsed.level ?? null,
+      fingerprint: parsed.fingerprint ?? null,
+      thresholdCount: parsed.thresholdCount,
+      windowMinutes: parsed.windowMinutes,
+      minAnomalyScore: parsed.minAnomalyScore,
+      action: parsed.action,
+      incidentSeverity: parsed.incidentSeverity,
+      cooldownMinutes: parsed.cooldownMinutes,
+      isActive: parsed.isActive
+    }
+  });
+
+  // Creating the first rule starts the evaluation loop. Without this the
+  // rule would exist and simply never run, which is the worst possible
+  // failure mode for an alerting feature.
+  await scheduleNextLogAlertEvaluation(user.organizationId);
+
+  await writeAuditEvent({
+    organizationId: user.organizationId,
+    actorUserId: user.id,
+    action: "alert_rule.created",
+    entityType: "LogAlertRule",
+    entityId: rule.id,
+    after: { name: rule.name, action: rule.action, thresholdCount: rule.thresholdCount },
+    metadata: { actorRole: user.role },
+    requestContextId: requestContext.requestContextId
+  });
+
+  revalidatePath("/settings/alerts");
+}
+
+export async function toggleLogAlertRuleAction(formData: FormData) {
+  const { user, requestContext } = await requireActionUser("alert_rule.toggle", "canned_reply:manage");
+
+  const ruleId = stringValue(formData, "ruleId");
+  const before = await prisma.logAlertRule.findFirst({ where: { id: ruleId, organizationId: user.organizationId } });
+  assertCanAccessRecord(user, before, "Alert rule");
+
+  const after = await prisma.logAlertRule.update({ where: { id: ruleId }, data: { isActive: !before.isActive } });
+
+  await writeAuditEvent({
+    organizationId: user.organizationId,
+    actorUserId: user.id,
+    action: "alert_rule.updated",
+    entityType: "LogAlertRule",
+    entityId: ruleId,
+    before: { isActive: before.isActive },
+    after: { isActive: after.isActive },
+    metadata: { actorRole: user.role },
+    requestContextId: requestContext.requestContextId
+  });
+
+  revalidatePath("/settings/alerts");
+}
+
+/** Queue an evaluation to run now rather than waiting for the next tick. */
+export async function evaluateLogAlertsNowAction() {
+  const { user, requestContext } = await requireActionUser("alert_rule.evaluate", "canned_reply:manage");
+
+  await prisma.backgroundJob.create({
+    data: {
+      organizationId: user.organizationId,
+      type: "LOG_ALERT_EVALUATION",
+      status: "QUEUED",
+      maxAttempts: 1,
+      payload: { intervalMinutes: 5 },
+      runAt: new Date(),
+      requestContextId: requestContext.requestContextId
+    }
+  });
+
+  revalidatePath("/settings/alerts");
+  revalidatePath("/jobs");
+}
+
+/**
+ * Open an incident from a log fingerprint by hand.
+ *
+ * The manual counterpart to what a CREATE_INCIDENT rule does automatically,
+ * and useful on its own: an engineer looking at a spike should not have to
+ * retype the service and then go and link the logs.
+ */
+export async function createIncidentFromLogsAction(formData: FormData) {
+  const { user, requestContext } = await requireActionUser("incident.from_logs", "incident:create");
+
+  const fingerprint = stringValue(formData, "fingerprint");
+  if (!fingerprint) {
+    throw new ActionError("A log fingerprint is required.");
+  }
+
+  const logs = await prisma.structuredLog.findMany({
+    where: { organizationId: user.organizationId, fingerprint },
+    orderBy: { timestamp: "desc" },
+    take: 100
+  });
+  if (logs.length === 0) {
+    throw new ActionError("No logs found for that fingerprint.");
+  }
+
+  const sample = logs[0];
+  const incident = await prisma.incident.create({
+    data: {
+      organizationId: user.organizationId,
+      title: `${sample.service}: ${sample.message}`.slice(0, 180),
+      description: `Opened from log fingerprint ${fingerprint}. ${logs.length} matching entries; most recent: ${sample.message}`,
+      status: "INVESTIGATING",
+      severity: sample.level === "fatal" ? "SEV1" : sample.level === "error" ? "SEV2" : "SEV3",
+      affectedService: sample.service,
+      ownerId: user.id
+    }
+  });
+
+  // Only logs not already attached to another incident, so this cannot
+  // quietly steal evidence from an existing investigation.
+  await prisma.structuredLog.updateMany({
+    where: { id: { in: logs.map((log) => log.id) }, incidentId: null },
+    data: { incidentId: incident.id }
+  });
+
+  await writeAuditEvent({
+    organizationId: user.organizationId,
+    actorUserId: user.id,
+    action: "incident.created",
+    entityType: "Incident",
+    entityId: incident.id,
+    after: { severity: incident.severity, fingerprint, linkedLogs: logs.length },
+    metadata: { actorRole: user.role, source: "log-fingerprint" },
+    requestContextId: requestContext.requestContextId
+  });
+
+  revalidatePath("/logs");
+  redirect(`/incidents/${incident.id}`);
 }
