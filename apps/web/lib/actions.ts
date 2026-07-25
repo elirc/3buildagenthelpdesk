@@ -26,7 +26,9 @@ import {
   mergeTags,
   normalizeTags,
   qualifiesAsFirstResponse,
+  API_SCOPES,
   evaluateRoutingRules,
+  generateApiKey,
   requireCapability,
   routingRuleSchema,
   type EvaluableRule,
@@ -1751,4 +1753,91 @@ export async function deleteRoutingRuleAction(formData: FormData) {
   });
 
   revalidatePath("/settings/routing");
+}
+
+/* -------------------------------------------------------------------------
+ * API keys
+ * ---------------------------------------------------------------------- */
+
+export async function createApiKeyAction(formData: FormData) {
+  const { user, requestContext } = await requireActionUser("api_key.create", "canned_reply:manage");
+
+  const name = stringValue(formData, "name");
+  if (name.length < 3) {
+    throw new ActionError("Give the key a name of at least 3 characters so it can be identified later.");
+  }
+
+  const scopes = formData
+    .getAll("scopes")
+    .map((value) => String(value))
+    .filter((scope): scope is (typeof API_SCOPES)[number] => (API_SCOPES as readonly string[]).includes(scope));
+  if (scopes.length === 0) {
+    throw new ActionError("Select at least one scope.");
+  }
+
+  const expiresInDays = Number.parseInt(stringValue(formData, "expiresInDays"), 10);
+  const expiresAt =
+    Number.isFinite(expiresInDays) && expiresInDays > 0
+      ? new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000)
+      : null;
+
+  const generated = generateApiKey();
+
+  await prisma.apiKey.create({
+    data: {
+      organizationId: user.organizationId,
+      name,
+      keyPrefix: generated.prefix,
+      keyHash: generated.hash,
+      scopes,
+      expiresAt,
+      createdById: user.id
+    }
+  });
+
+  // The full key is never persisted, so it can only be shown once. It is
+  // carried back in the redirect rather than stored anywhere; that does put
+  // it in the URL and therefore in browser history, which is the trade-off
+  // documented on the page and the reason for the warning next to it.
+  await writeAuditEvent({
+    organizationId: user.organizationId,
+    actorUserId: user.id,
+    action: "api_key.created",
+    entityType: "ApiKey",
+    entityId: generated.prefix,
+    // Deliberately records the prefix and scopes and nothing else. An audit
+    // log that contained the key would undo the point of hashing it.
+    after: { name, scopes, keyPrefix: generated.prefix, expiresAt: expiresAt?.toISOString() ?? null },
+    metadata: { actorRole: user.role },
+    requestContextId: requestContext.requestContextId
+  });
+
+  revalidatePath("/settings");
+  redirect(`/settings?newKey=${encodeURIComponent(generated.key)}`);
+}
+
+export async function revokeApiKeyAction(formData: FormData) {
+  const { user, requestContext } = await requireActionUser("api_key.revoke", "canned_reply:manage");
+
+  const apiKeyId = stringValue(formData, "apiKeyId");
+  const key = await prisma.apiKey.findFirst({ where: { id: apiKeyId, organizationId: user.organizationId } });
+  assertCanAccessRecord(user, key, "API key");
+
+  // Revoked, not deleted: the row is the record of what existed and how
+  // much it was used, which is exactly what an incident review wants.
+  const after = await prisma.apiKey.update({ where: { id: apiKeyId }, data: { revokedAt: new Date() } });
+
+  await writeAuditEvent({
+    organizationId: user.organizationId,
+    actorUserId: user.id,
+    action: "api_key.revoked",
+    entityType: "ApiKey",
+    entityId: apiKeyId,
+    before: { revokedAt: null },
+    after: { revokedAt: after.revokedAt?.toISOString() ?? null, requestCount: after.requestCount },
+    metadata: { actorRole: user.role },
+    requestContextId: requestContext.requestContextId
+  });
+
+  revalidatePath("/settings");
 }
