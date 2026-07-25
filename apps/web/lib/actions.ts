@@ -28,6 +28,8 @@ import {
   normalizeTags,
   qualifiesAsFirstResponse,
   API_SCOPES,
+  articleSchema,
+  assertArticleTransition,
   evaluateRoutingRules,
   generateApiKey,
   logAlertRuleSchema,
@@ -2012,4 +2014,149 @@ export async function createIncidentFromLogsAction(formData: FormData) {
 
   revalidatePath("/logs");
   redirect(`/incidents/${incident.id}`);
+}
+
+/* -------------------------------------------------------------------------
+ * Knowledge base
+ * ---------------------------------------------------------------------- */
+
+export async function createArticleAction(formData: FormData) {
+  const { user, requestContext } = await requireActionUser("article.create", "canned_reply:manage");
+
+  const parsed = articleSchema.parse({
+    title: stringValue(formData, "title"),
+    summary: stringValue(formData, "summary"),
+    body: stringValue(formData, "body"),
+    category: optionalStringValue(formData, "category"),
+    tags: normalizeTags(stringValue(formData, "tags")),
+    status: stringValue(formData, "status") || "DRAFT"
+  });
+
+  const article = await prisma.knowledgeArticle.create({
+    data: {
+      organizationId: user.organizationId,
+      title: parsed.title,
+      summary: parsed.summary,
+      body: parsed.body,
+      category: parsed.category ?? null,
+      tags: parsed.tags,
+      status: parsed.status,
+      authorId: user.id,
+      publishedAt: parsed.status === "PUBLISHED" ? new Date() : null
+    }
+  });
+
+  await writeAuditEvent({
+    organizationId: user.organizationId,
+    actorUserId: user.id,
+    action: "article.created",
+    entityType: "KnowledgeArticle",
+    entityId: article.id,
+    after: { title: article.title, status: article.status, category: article.category },
+    metadata: { actorRole: user.role },
+    requestContextId: requestContext.requestContextId
+  });
+
+  revalidatePath("/knowledge");
+  redirect(`/knowledge/${article.id}`);
+}
+
+export async function changeArticleStatusAction(formData: FormData) {
+  const { user, requestContext } = await requireActionUser("article.status", "canned_reply:manage");
+
+  const articleId = stringValue(formData, "articleId");
+  const before = await prisma.knowledgeArticle.findFirst({
+    where: { id: articleId, organizationId: user.organizationId }
+  });
+  assertCanAccessRecord(user, before, "Article");
+
+  const nextStatus = stringValue(formData, "status") as typeof before.status;
+  assertArticleTransition(before.status, nextStatus);
+
+  const after = await prisma.knowledgeArticle.update({
+    where: { id: articleId },
+    data: {
+      status: nextStatus,
+      // Stamped once. Re-publishing after an archive keeps the original
+      // date, because "first published" is the fact people cite.
+      publishedAt: nextStatus === "PUBLISHED" && before.publishedAt == null ? new Date() : before.publishedAt
+    }
+  });
+
+  await writeAuditEvent({
+    organizationId: user.organizationId,
+    actorUserId: user.id,
+    action: nextStatus === "PUBLISHED" ? "article.published" : nextStatus === "ARCHIVED" ? "article.archived" : "article.updated",
+    entityType: "KnowledgeArticle",
+    entityId: articleId,
+    before: { status: before.status },
+    after: { status: after.status },
+    metadata: { actorRole: user.role },
+    requestContextId: requestContext.requestContextId
+  });
+
+  revalidatePath("/knowledge");
+  revalidatePath(`/knowledge/${articleId}`);
+}
+
+export async function linkArticleToTicketAction(formData: FormData) {
+  const { user, requestContext } = await requireActionUser("article.link", "ticket:update");
+
+  const ticketId = stringValue(formData, "ticketId");
+  const articleId = stringValue(formData, "articleId");
+
+  const [ticket, article] = await Promise.all([
+    prisma.ticket.findFirst({ where: { id: ticketId, organizationId: user.organizationId }, select: { id: true, organizationId: true } }),
+    prisma.knowledgeArticle.findFirst({ where: { id: articleId, organizationId: user.organizationId }, select: { id: true, organizationId: true } })
+  ]);
+  assertCanAccessRecord(user, ticket, "Ticket");
+  assertCanAccessRecord(user, article, "Article");
+
+  const existing = await prisma.ticketArticleLink.findUnique({
+    where: { ticketId_articleId: { ticketId, articleId } }
+  });
+  // Attaching twice is a double-click, not an error worth an error page.
+  if (existing) {
+    revalidatePath(`/tickets/${ticketId}`);
+    return;
+  }
+
+  await prisma.ticketArticleLink.create({
+    data: { ticketId, articleId, linkedById: user.id }
+  });
+  await prisma.knowledgeArticle.update({ where: { id: articleId }, data: { linkCount: { increment: 1 } } });
+
+  await writeAuditEvent({
+    organizationId: user.organizationId,
+    actorUserId: user.id,
+    action: "ticket.article_linked",
+    entityType: "Ticket",
+    entityId: ticketId,
+    after: { articleId },
+    metadata: { actorRole: user.role },
+    requestContextId: requestContext.requestContextId
+  });
+
+  revalidatePath(`/tickets/${ticketId}`);
+}
+
+export async function rateArticleLinkAction(formData: FormData) {
+  const { user } = await requireActionUser("article.rate", "ticket:update");
+
+  const linkId = stringValue(formData, "linkId");
+  const wasHelpful = stringValue(formData, "wasHelpful") === "yes";
+
+  // Joined through the ticket, because TicketArticleLink carries no
+  // organizationId of its own - the scoping has to come from a parent.
+  const link = await prisma.ticketArticleLink.findFirst({
+    where: { id: linkId, ticket: { organizationId: user.organizationId } },
+    include: { ticket: { select: { id: true } } }
+  });
+  if (!link) {
+    throw new ActionError("Article link was not found or is outside the active organization.");
+  }
+
+  await prisma.ticketArticleLink.update({ where: { id: linkId }, data: { wasHelpful } });
+
+  revalidatePath(`/tickets/${link.ticket.id}`);
 }

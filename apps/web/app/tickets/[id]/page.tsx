@@ -8,11 +8,12 @@ import {
   linkedTicketIds,
   renderCannedReply,
   selectRepliesForTicket,
+  suggestArticles,
   ticketLinkLabel,
   TICKET_LINK_TYPES
 } from "@agentdesk/domain";
 import { labelMaps, TICKET_CATEGORIES, TICKET_PRIORITIES } from "@agentdesk/shared";
-import { addTicketCommentAction, linkTicketsAction, mergeTicketsAction, runDuplicateDetectionAction, runTicketAgentAction, unlinkTicketsAction, updateTicketAction } from "../../../lib/actions";
+import { addTicketCommentAction, linkArticleToTicketAction, linkTicketsAction, mergeTicketsAction, rateArticleLinkAction, runDuplicateDetectionAction, runTicketAgentAction, unlinkTicketsAction, updateTicketAction } from "../../../lib/actions";
 import { firstResponseTone, formatDateTime, formatDuration, priorityTone, slaTone, ticketStatusTone } from "../../../lib/format";
 import { requireCurrentUser } from "../../../lib/auth";
 
@@ -26,7 +27,7 @@ export default async function TicketDetailPage({
   searchParams: { replyId?: string };
 }) {
   const currentUser = await requireCurrentUser();
-  const [ticket, teams, users, incidents, agentRuns, auditEvents, cannedReplies, ticketLinks, linkableTickets, duplicateRun] =
+  const [ticket, teams, users, incidents, agentRuns, auditEvents, cannedReplies, ticketLinks, linkableTickets, publishedArticles, duplicateRun] =
     await Promise.all([
     prisma.ticket.findFirst({
       where: { id: params.id, organizationId: currentUser.organizationId },
@@ -36,6 +37,7 @@ export default async function TicketDetailPage({
         incident: true,
         mergedInto: true,
         mergedFrom: true,
+        articleLinks: { include: { article: true }, orderBy: { createdAt: "desc" } },
         comments: { include: { author: true }, orderBy: { createdAt: "asc" } },
         logs: { orderBy: { timestamp: "desc" }, take: 8 },
         jobs: { orderBy: { createdAt: "desc" }, take: 8 }
@@ -75,6 +77,10 @@ export default async function TicketDetailPage({
       orderBy: { updatedAt: "desc" },
       take: 50,
       select: { id: true, title: true, status: true }
+    }),
+    prisma.knowledgeArticle.findMany({
+      where: { organizationId: currentUser.organizationId, status: "PUBLISHED" },
+      take: 200
     }),
     prisma.agentRun.findFirst({
       where: {
@@ -120,6 +126,15 @@ export default async function TicketDetailPage({
   // are two levels down. Narrowed defensively rather than cast: this JSON
   // was written by a previous version of the agent and may not match the
   // shape the current code expects.
+  // Suggestions are computed per render rather than stored. The library is
+  // small and the scorer is pure, so a stale suggestion is impossible -
+  // editing the ticket title immediately changes what is offered.
+  const attachedArticleIds = new Set(ticket.articleLinks.map((link) => link.articleId));
+  const articleSuggestions = suggestArticles(
+    { title: ticket.title, description: ticket.description, category: ticket.category, tags: ticket.tags },
+    publishedArticles
+  ).filter((entry) => !attachedArticleIds.has(entry.article.id));
+
   const duplicateOutput = (duplicateRun?.output as { output?: { matches?: unknown } } | null)?.output;
   const duplicateMatches = Array.isArray(duplicateOutput?.matches)
     ? (duplicateOutput.matches as Array<{ ticketId: string; title: string; similarity: number; reasons: string[] }>)
@@ -497,6 +512,76 @@ export default async function TicketDetailPage({
                 </Field>
                 <Button type="submit" variant="danger">Merge Ticket</Button>
               </form>
+            ) : null}
+          </Card>
+
+          <Card title="Knowledge Articles">
+            {ticket.articleLinks.length > 0 ? (
+              <DataTable>
+                <tbody>
+                  {ticket.articleLinks.map((link) => (
+                    <tr key={link.id}>
+                      <td>
+                        <a href={`/knowledge/${link.article.id}`}>{link.article.title}</a>
+                        <div className="muted">{link.article.summary.slice(0, 90)}</div>
+                      </td>
+                      <td>
+                        {link.wasHelpful === null ? (
+                          <div className="actions">
+                            <form action={rateArticleLinkAction} style={{ display: "inline" }}>
+                              <input type="hidden" name="linkId" value={link.id} />
+                              <input type="hidden" name="wasHelpful" value="yes" />
+                              <Button type="submit" disabled={!writable}>Helpful</Button>
+                            </form>
+                            <form action={rateArticleLinkAction} style={{ display: "inline" }}>
+                              <input type="hidden" name="linkId" value={link.id} />
+                              <input type="hidden" name="wasHelpful" value="no" />
+                              <Button type="submit" disabled={!writable}>Not helpful</Button>
+                            </form>
+                          </div>
+                        ) : (
+                          <Badge tone={link.wasHelpful ? "success" : "warning"}>
+                            {link.wasHelpful ? "Helpful" : "Not helpful"}
+                          </Badge>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </DataTable>
+            ) : (
+              <p className="muted">No articles attached yet.</p>
+            )}
+
+            {articleSuggestions.length > 0 ? (
+              <>
+                <p className="muted" style={{ marginTop: 12 }}>
+                  Suggested from the knowledge base. Advisory only &mdash; matching is on wording, category and tags,
+                  not meaning.
+                </p>
+                <DataTable>
+                  <tbody>
+                    {articleSuggestions.map((entry) => (
+                      <tr key={entry.article.id}>
+                        <td>
+                          <a href={`/knowledge/${entry.article.id}`}>{entry.article.title}</a>
+                          <div className="muted">{entry.reasons.join("; ")}</div>
+                        </td>
+                        <td>
+                          <Badge tone={entry.score >= 50 ? "warning" : "neutral"}>{entry.score}%</Badge>
+                        </td>
+                        <td>
+                          <form action={linkArticleToTicketAction}>
+                            <input type="hidden" name="ticketId" value={ticket.id} />
+                            <input type="hidden" name="articleId" value={entry.article.id} />
+                            <Button type="submit" disabled={!writable}>Attach</Button>
+                          </form>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </DataTable>
+              </>
             ) : null}
           </Card>
 

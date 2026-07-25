@@ -129,6 +129,7 @@ model Organization {
   routingRules RoutingRule[]
   apiKeys     ApiKey[]
   logAlertRules LogAlertRule[]
+  knowledgeArticles KnowledgeArticle[]
   createdAt   DateTime        @default(now())
   updatedAt   DateTime        @updatedAt
 }
@@ -152,6 +153,8 @@ model User {
   savedViews      SavedView[]     @relation("SavedViews")
   routedRules     RoutingRule[]   @relation("RoutedUser")
   apiKeys         ApiKey[]        @relation("ApiKeys")
+  articles        KnowledgeArticle[] @relation("AuthoredArticles")
+  articleLinks    TicketArticleLink[] @relation("ArticleLinks")
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
 
@@ -220,6 +223,7 @@ model Ticket {
   mergedInto     Ticket?         @relation("TicketMerges", fields: [mergedIntoId], references: [id])
   mergedFrom     Ticket[]        @relation("TicketMerges")
   mergedAt       DateTime?
+  articleLinks   TicketArticleLink[]
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
 
@@ -294,6 +298,49 @@ model BusinessCalendar {
   workdays           Int[]        @default([1, 2, 3, 4, 5])
   holidays           DateTime[]   @default([])
   updatedAt          DateTime     @updatedAt
+}
+
+enum ArticleStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+model KnowledgeArticle {
+  id             String              @id @default(cuid())
+  organizationId String
+  organization   Organization        @relation(fields: [organizationId], references: [id])
+  title          String
+  summary        String
+  body           String
+  category       TicketCategory?
+  tags           String[]            @default([])
+  status         ArticleStatus       @default(DRAFT)
+  authorId       String?
+  author         User?               @relation("AuthoredArticles", fields: [authorId], references: [id])
+  viewCount      Int                 @default(0)
+  linkCount      Int                 @default(0)
+  publishedAt    DateTime?
+  links          TicketArticleLink[]
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  @@index([organizationId, status, category])
+}
+
+/// Which article was used on which ticket, and whether it helped.
+model TicketArticleLink {
+  id         String           @id @default(cuid())
+  ticketId   String
+  ticket     Ticket           @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  articleId  String
+  article    KnowledgeArticle @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  linkedById String?
+  linkedBy   User?            @relation("ArticleLinks", fields: [linkedById], references: [id])
+  wasHelpful Boolean?
+  createdAt  DateTime         @default(now())
+
+  @@unique([ticketId, articleId])
 }
 
 /// A watch on the log stream that can open an incident by itself.
