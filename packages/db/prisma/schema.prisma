@@ -125,6 +125,7 @@ model Organization {
   ticketLinks TicketLink[]
   savedViews  SavedView[]
   businessCalendar BusinessCalendar?
+  routingRules RoutingRule[]
   createdAt   DateTime        @default(now())
   updatedAt   DateTime        @updatedAt
 }
@@ -146,6 +147,7 @@ model User {
   cannedReplies   CannedReply[]   @relation("CannedReplies")
   ticketLinks     TicketLink[]    @relation("TicketLinks")
   savedViews      SavedView[]     @relation("SavedViews")
+  routedRules     RoutingRule[]   @relation("RoutedUser")
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
 
@@ -160,6 +162,7 @@ model Team {
   slug           String
   users          User[]
   tickets        Ticket[]
+  routedRules    RoutingRule[] @relation("RoutedTeam")
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
 
@@ -287,6 +290,42 @@ model BusinessCalendar {
   workdays           Int[]        @default([1, 2, 3, 4, 5])
   holidays           DateTime[]   @default([])
   updatedAt          DateTime     @updatedAt
+}
+
+enum RoutingConditionField {
+  CATEGORY
+  PRIORITY
+  TAG
+  TITLE_CONTAINS
+  DESCRIPTION_CONTAINS
+  REQUESTER_EMAIL_DOMAIN
+}
+
+/// An ordered rule that assigns new tickets automatically.
+///
+/// conditions is Json because the shape is a list of {field, operator,
+/// value} and normalising it into a table would buy nothing: rules are
+/// read as a whole, never queried by individual condition.
+model RoutingRule {
+  id             String          @id @default(cuid())
+  organizationId String
+  organization   Organization    @relation(fields: [organizationId], references: [id])
+  name           String
+  priorityOrder  Int             @default(100)
+  isActive       Boolean         @default(true)
+  conditions     Json            @default("[]")
+  assignTeamId   String?
+  assignTeam     Team?           @relation("RoutedTeam", fields: [assignTeamId], references: [id])
+  assignUserId   String?
+  assignUser     User?           @relation("RoutedUser", fields: [assignUserId], references: [id])
+  setPriority    TicketPriority?
+  addTags        String[]        @default([])
+  matchCount     Int             @default(0)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@unique([organizationId, name])
+  @@index([organizationId, isActive, priorityOrder])
 }
 
 enum TicketLinkType {
