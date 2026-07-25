@@ -31,6 +31,7 @@ export type AuditAction =
   | "agent.run_started"
   | "agent.run_completed"
   | "agent.run_failed"
+  | "agent.run_replayed"
   | "canned_reply.created"
   | "canned_reply.updated"
   | "canned_reply.deactivated"
