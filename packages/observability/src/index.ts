@@ -30,6 +30,9 @@ export type AuditAction =
   | "agent.run_started"
   | "agent.run_completed"
   | "agent.run_failed"
+  | "canned_reply.created"
+  | "canned_reply.updated"
+  | "canned_reply.deactivated"
   | "security.access_denied";
 
 export type AuditEventInput = {
