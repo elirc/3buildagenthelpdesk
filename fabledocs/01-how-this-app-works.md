@@ -283,27 +283,37 @@ Read the seed script early. It is the best single document about how the entitie
 
 ## 11. Known rough edges
 
+> **Note (updated after the backlog shipped):** the 20 stories in document 02
+> have all been implemented, and several of the issues below were fixed in the
+> process — CI now exists, the ticket and incident queues paginate, the worker
+> reclaims abandoned jobs, retry accounting has a single owner, and the test
+> suite runs on Windows. The list is kept as written because it is an accurate
+> description of the baseline the stories were written against, and because
+> each PR references the specific rough edge it closed. Items still true today
+> are marked **(still open)**.
+
 These are real, verified by reading the code. Some are deliberate scope cuts and some are latent bugs. Knowing them will save you from "fixing" something that is intentional, and from assuming something works that doesn't.
 
 **Not built yet (despite `docs/` describing them):**
-- No CI. There is no `.github/` directory.
-- No migration history. `packages/db/prisma/` contains only `schema.prisma`; the workflow is `db push`. Any schema change you make is unversioned, and there is no way to roll one back.
-- No REST or GraphQL API. Server actions are the only mutation path.
-- No realtime anything. Every page is a full server render behind a link click.
-- No `loading.tsx` and no `not-found.tsx` anywhere. `notFound()` renders the framework default.
-- No email, no webhook delivery, no notifications. `processDemoJob` simulates them.
+- ~~No CI.~~ Fixed in PR #1.
+- **(still open)** No migration history. `packages/db/prisma/` contains only `schema.prisma`; the workflow is `db push`. Any schema change you make is unversioned, and there is no way to roll one back.
+- ~~No REST or GraphQL API.~~ A read-only `/api/v1` arrived in PR #19; server actions remain the only *mutation* path.
+- **(still open)** No realtime anything. Every page is a full server render behind a link click.
+- **(still open)** No `loading.tsx` and no `not-found.tsx` anywhere. `notFound()` renders the framework default.
+- Partly fixed: in-app notifications arrived in PR #22. Email and webhook delivery are **(still open)** — `processDemoJob` simulates them.
 
 **Latent bugs and inconsistencies:**
-- `scopedWhere` (`access.ts:23`) is exported and unit-tested but **used by zero pages**. Every page spells the org filter out by hand. The helper is a good idea that never landed.
-- `/tickets` and `/incidents` have **no pagination**, while `/logs`, `/jobs`, `/audit`, and `/agents` do. The dashboard is worse: `page.tsx:21` loads *every* open ticket with no `take` and then counts them in memory.
-- The worker never reclaims a stalled job. `lockedAt` and `lockedBy` are written but never read. If a worker dies mid-job, that row stays `RUNNING` forever.
-- `claimNextJob` does not filter by organization. Fine for a single-tenant worker; wrong if you ever want per-tenant workers or fairness.
-- Retry accounting is split in two: `retryJobAction` (`actions.ts:487`) increments `attempts` when a human clicks Retry, and the worker separately decides `attempts >= maxAttempts → DEAD_LETTERED` on failure. Two writers, one counter.
+- **(still open)** `scopedWhere` (`access.ts:23`) is exported and unit-tested but **used by zero pages**. Every page spells the org filter out by hand. The helper is a good idea that never landed.
+- ~~`/tickets` and `/incidents` have no pagination~~ Fixed in PR #3, along with the dashboard counts.
+- Formerly:, while `/logs`, `/jobs`, `/audit`, and `/agents` do. The dashboard is worse: `page.tsx:21` loads *every* open ticket with no `take` and then counts them in memory.
+- ~~The worker never reclaims a stalled job.~~ Fixed in PR #7. `lockedAt` and `lockedBy` are written but never read. If a worker dies mid-job, that row stays `RUNNING` forever.
+- **(still open)** `claimNextJob` does not filter by organization. Fine for a single-tenant worker; wrong if you ever want per-tenant workers or fairness.
+- ~~Retry accounting is split in two~~ Fixed in PR #12; the worker now owns `attempts`. Formerly: `retryJobAction` (`actions.ts:487`) increments `attempts` when a human clicks Retry, and the worker separately decides `attempts >= maxAttempts → DEAD_LETTERED` on failure. Two writers, one counter.
 - `updateTicketAction` recomputes `slaDueAt` from the *original* `createdAt` when priority changes (`actions.ts:242`). Raising a 3-day-old LOW ticket to CRITICAL produces an SLA that was due two days ago and is instantly breached. Arguably correct, arguably a bug — decide deliberately before you touch it.
-- Nothing validates that `assignedUserId` is a member of `assignedTeamId`.
-- `error.tsx` renders `error.message` verbatim, which in production would surface internal messages to the user.
-- The user switcher `<select>` in `layout.tsx:55` has `onChange={undefined}` — a leftover. You must click "Switch".
-- `Incident.agentFindings` is written only by the seed. No action ever populates it.
+- **(still open)** Nothing validates that `assignedUserId` is a member of `assignedTeamId`.
+- **(still open)** `error.tsx` renders `error.message` verbatim, which in production would surface internal messages to the user.
+- **(still open)** The user switcher `<select>` has `onChange={undefined}` — a leftover. You must click "Switch".
+- **(still open)** `Incident.agentFindings` is written only by the seed. No action ever populates it.
 
 None of these block the stories in document 02. Several of the stories fix them on purpose, and each one says so.
 
