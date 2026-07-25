@@ -19,6 +19,7 @@ const navItems = [
   { href: "/logs", label: "Logs" },
   { href: "/jobs", label: "Jobs" },
   { href: "/agents", label: "Agent Runs" },
+  { href: "/analytics", label: "Analytics" },
   { href: "/audit", label: "Audit Events" },
   { href: "/settings", label: "Settings" }
 ];
