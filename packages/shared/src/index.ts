@@ -39,6 +39,7 @@ export const LOG_LEVELS = ["debug", "info", "warn", "error", "fatal"] as const;
 export type LogLevel = (typeof LOG_LEVELS)[number];
 
 export const JOB_TYPES = [
+  "LOG_ALERT_EVALUATION",
   "EMAIL_NOTIFICATION",
   "WEBHOOK_DELIVERY",
   "SLA_ESCALATION",
@@ -114,6 +115,7 @@ export const labelMaps = {
     DEAD_LETTERED: "Dead Lettered"
   },
   jobType: {
+    LOG_ALERT_EVALUATION: "Log Alert Evaluation",
     EMAIL_NOTIFICATION: "Email Notification",
     WEBHOOK_DELIVERY: "Webhook Delivery",
     SLA_ESCALATION: "SLA Escalation",

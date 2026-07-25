@@ -4,6 +4,7 @@ export * from "./business-hours";
 export * from "./canned-replies";
 export * from "./incidents";
 export * from "./jobs";
+export * from "./log-alerts";
 export * from "./logs";
 export * from "./permissions";
 export * from "./routing";
