@@ -142,6 +142,7 @@ export default async function JobsPage({
           </Field>
           <Button type="submit">Apply</Button>
           <Button href="/jobs?status=FAILED">Failed Jobs</Button>
+          <Button href="/jobs/dead-letter">Dead Letter Queue</Button>
         </form>
 
         <DataTable>

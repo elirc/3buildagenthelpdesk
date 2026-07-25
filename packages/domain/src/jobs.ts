@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { JOB_STATUSES, JOB_TYPES, type JobStatus } from "@agentdesk/shared";
+import { JOB_STATUSES, JOB_TYPES, type JobStatus, type JobType } from "@agentdesk/shared";
 
 export const createJobSchema = z.object({
   type: z.enum(JOB_TYPES),
@@ -17,6 +17,74 @@ export function canRetryJob(status: JobStatus, attempts: number, maxAttempts: nu
 
 export function shouldDeadLetterJob(status: JobStatus, attempts: number, maxAttempts: number): boolean {
   return status === "FAILED" && attempts >= maxAttempts;
+}
+
+/* -------------------------------------------------------------------------
+ * Dead-letter recovery
+ *
+ * Dead-lettering was a one-way door: nothing could bring a job back. After
+ * a dependency outage you might have two hundred of them, all with the same
+ * cause, all now fixable, and no way to act on them together.
+ * ---------------------------------------------------------------------- */
+
+/** How many times an operator may send the same job back before it is the
+ *  job that is wrong rather than the dependency. */
+export const MAX_REQUEUES = 3;
+
+export function canRequeueJob(job: { status: JobStatus; requeueCount: number }): boolean {
+  return job.status === "DEAD_LETTERED" && job.requeueCount < MAX_REQUEUES;
+}
+
+/**
+ * Collapse an error message to its shape, so that two hundred failures
+ * differing only in an id or a duration group into one row.
+ *
+ * This is the same normalisation `createLogFingerprint` applies to log
+ * messages, and reusing the idea rather than the function is deliberate:
+ * log fingerprints are hashed and stored, whereas here the readable text
+ * is the point — an operator has to recognise the failure.
+ */
+export function normalizeErrorMessage(message: string | null | undefined): string {
+  if (!message) return "(no error message)";
+  return message
+    .toLowerCase()
+    .replace(/[0-9a-f]{8,}/g, "<id>")
+    .replace(/\d+/g, "<n>")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export type DeadLetterGroup<T> = {
+  key: string;
+  type: JobType;
+  normalizedError: string;
+  count: number;
+  jobs: T[];
+};
+
+/**
+ * Group dead-lettered jobs by type plus normalised error.
+ *
+ * Two hundred rows is not a triage surface; six groups of thirty-odd is.
+ */
+export function groupDeadLetters<T extends { type: JobType; errorMessage: string | null }>(
+  jobs: T[]
+): Array<DeadLetterGroup<T>> {
+  const groups = new Map<string, DeadLetterGroup<T>>();
+
+  for (const job of jobs) {
+    const normalizedError = normalizeErrorMessage(job.errorMessage);
+    const key = `${job.type}::${normalizedError}`;
+    const existing = groups.get(key);
+    if (existing) {
+      existing.count += 1;
+      existing.jobs.push(job);
+    } else {
+      groups.set(key, { key, type: job.type, normalizedError, count: 1, jobs: [job] });
+    }
+  }
+
+  return Array.from(groups.values()).sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
 }
 
 /* -------------------------------------------------------------------------

@@ -389,6 +389,11 @@ model BackgroundJob {
   // existing row is immediately due and nothing changes for them.
   runAt             DateTime     @default(now())
   lastAttemptAt     DateTime?
+  deadLetteredAt    DateTime?
+  // Why an operator sent this back, recorded on the job rather than only
+  // in the audit log so it is visible where the decision matters.
+  requeueReason     String?
+  requeueCount      Int          @default(0)
   startedAt         DateTime?
   finishedAt        DateTime?
   createdAt         DateTime     @default(now())

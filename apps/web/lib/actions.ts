@@ -13,6 +13,7 @@ import {
   calculateSlaDueAt,
   cannedReplySchema,
   canEditSavedView,
+  canRequeueJob,
   canRetryJob,
   createIncidentSchema,
   createTicketSchema,
@@ -627,6 +628,7 @@ export async function deadLetterJobAction(formData: FormData) {
     where: { id: jobId },
     data: {
       status: "DEAD_LETTERED",
+      deadLetteredAt: new Date(),
       finishedAt: new Date(),
       requestContextId: requestContext.requestContextId
     }
@@ -1191,4 +1193,68 @@ export async function toggleSavedViewSharedAction(formData: FormData) {
   });
 
   revalidatePath(`/${view.resource}`);
+}
+
+/* -------------------------------------------------------------------------
+ * Dead-letter recovery
+ * ---------------------------------------------------------------------- */
+
+export async function requeueDeadLetterJobsAction(formData: FormData) {
+  const { user, requestContext } = await requireActionUser("job.requeue", "job:retry");
+
+  const jobIds = formData.getAll("jobIds").map((value) => String(value)).filter(Boolean);
+  if (jobIds.length === 0) return;
+
+  // A reason is mandatory. Requeuing two hundred jobs is an operational
+  // decision someone will ask about later, and "why" is the part the audit
+  // log cannot reconstruct on its own.
+  const reason = stringValue(formData, "reason");
+  if (reason.length < 10) {
+    throw new ActionError("Give a reason of at least 10 characters explaining why these jobs are safe to retry.");
+  }
+
+  const jobs = await prisma.backgroundJob.findMany({
+    where: { id: { in: jobIds }, organizationId: user.organizationId }
+  });
+
+  const eligible = jobs.filter((job) => canRequeueJob(job));
+  const blocked = jobs.length - eligible.length;
+
+  for (const job of eligible) {
+    await prisma.backgroundJob.update({
+      where: { id: job.id },
+      data: {
+        status: "QUEUED",
+        // Reset the ladder: the operator is asserting the cause is fixed,
+        // so the job deserves its full retry budget again rather than
+        // dead-lettering on its next stumble.
+        attempts: 0,
+        runAt: new Date(),
+        errorMessage: null,
+        finishedAt: null,
+        requeueCount: { increment: 1 },
+        requeueReason: reason,
+        requestContextId: requestContext.requestContextId
+      }
+    });
+
+    await writeAuditEvent({
+      organizationId: user.organizationId,
+      actorUserId: user.id,
+      action: "job.requeued",
+      entityType: "BackgroundJob",
+      entityId: job.id,
+      before: { status: job.status, attempts: job.attempts, requeueCount: job.requeueCount },
+      after: { status: "QUEUED", attempts: 0, requeueCount: job.requeueCount + 1 },
+      metadata: { actorRole: user.role, reason, batchSize: eligible.length },
+      requestContextId: requestContext.requestContextId
+    });
+  }
+
+  revalidatePath("/jobs/dead-letter");
+  revalidatePath("/jobs");
+
+  const params = new URLSearchParams({ requeued: String(eligible.length) });
+  if (blocked > 0) params.set("blocked", String(blocked));
+  redirect(`/jobs/dead-letter?${params.toString()}`);
 }

@@ -23,6 +23,7 @@ export type AuditAction =
   | "incident.updated"
   | "job.retried"
   | "job.dead_lettered"
+  | "job.requeued"
   | "job.worker_started"
   | "job.worker_completed"
   | "job.worker_failed"
