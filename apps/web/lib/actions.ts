@@ -582,11 +582,19 @@ export async function retryJobAction(formData: FormData) {
     throw new ActionError("Job is not eligible for retry.");
   }
 
+  // Deliberately does not touch `attempts`. The worker owns that counter —
+  // it increments on each real attempt and decides when the budget is
+  // exhausted. Incrementing here as well was double-counting: a human retry
+  // burned an attempt the job had not actually made.
+  //
+  // This only makes the job due immediately, overriding any backoff delay.
+  // That is the whole point of a manual retry: "I have fixed the cause,
+  // stop waiting."
   const after = await prisma.backgroundJob.update({
     where: { id: jobId },
     data: {
       status: "RETRYING",
-      attempts: before.attempts + 1,
+      runAt: new Date(),
       startedAt: null,
       finishedAt: null,
       requestContextId: requestContext.requestContextId

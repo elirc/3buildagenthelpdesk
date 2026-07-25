@@ -385,6 +385,10 @@ model BackgroundJob {
   requestContextId  String?
   lockedAt          DateTime?
   lockedBy          String?
+  // When this job becomes eligible to run. Defaults to now, so every
+  // existing row is immediately due and nothing changes for them.
+  runAt             DateTime     @default(now())
+  lastAttemptAt     DateTime?
   startedAt         DateTime?
   finishedAt        DateTime?
   createdAt         DateTime     @default(now())
@@ -398,6 +402,7 @@ model BackgroundJob {
   @@index([organizationId, relatedIncidentId])
   @@index([organizationId, createdAt])
   @@index([status, lockedAt])
+  @@index([status, runAt])
 }
 
 model AgentRun {

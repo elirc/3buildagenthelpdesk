@@ -20,6 +20,67 @@ export function shouldDeadLetterJob(status: JobStatus, attempts: number, maxAtte
 }
 
 /* -------------------------------------------------------------------------
+ * Scheduling and backoff
+ *
+ * A failed job used to sit in FAILED for ever until a human clicked Retry,
+ * and that retry re-queued it for immediate pickup. So the only available
+ * recovery strategy was "try again right now", repeatedly, against a
+ * dependency that had just failed.
+ *
+ * The FAILED_JOB_INVESTIGATION agent has been recommending "retry with
+ * exponential backoff and jitter" since it was written. This is the
+ * capability that recommendation assumed existed.
+ * ---------------------------------------------------------------------- */
+
+export const BACKOFF_BASE_MS = 30_000;
+export const BACKOFF_MAX_MS = 60 * 60 * 1000;
+
+/**
+ * Small deterministic hash of the job id, 0..999.
+ *
+ * Used for jitter instead of Math.random(). Two jobs failing in the same
+ * tick must not retry in the same tick, or a struggling dependency takes
+ * the whole batch again at once — that argues for randomness. But random
+ * jitter makes the function untestable: you cannot assert a value that
+ * changes every run.
+ *
+ * Deriving it from the id gives both properties. Different ids spread out;
+ * the same id always produces the same delay.
+ */
+function idJitter(jobId: string): number {
+  let hash = 0;
+  for (let index = 0; index < jobId.length; index += 1) {
+    hash = (hash * 31 + jobId.charCodeAt(index)) % 100_000;
+  }
+  return hash % 1000;
+}
+
+/**
+ * Delay before the given attempt may run: 30s, 60s, 120s, … capped at an
+ * hour, plus up to ~25% of the base as id-derived jitter.
+ */
+export function calculateBackoffMs(attempt: number, jobId: string): number {
+  const safeAttempt = Math.max(1, Math.floor(attempt));
+  // Cap the exponent before computing the power, or attempt 400 overflows
+  // to Infinity on the way to being clamped.
+  const exponent = Math.min(safeAttempt - 1, 20);
+  const base = Math.min(BACKOFF_BASE_MS * 2 ** exponent, BACKOFF_MAX_MS);
+  const jitter = idJitter(jobId) * 8;
+  return Math.min(base + jitter, BACKOFF_MAX_MS + jitter);
+}
+
+export function nextRunAt(params: { attempt: number; jobId: string; now?: Date }): Date {
+  const now = params.now ?? new Date();
+  return new Date(now.getTime() + calculateBackoffMs(params.attempt, params.jobId));
+}
+
+/** Whether a job is eligible to be claimed right now. */
+export function isJobDue(job: { status: JobStatus; runAt: Date }, now: Date = new Date()): boolean {
+  if (!["QUEUED", "RETRYING"].includes(job.status)) return false;
+  return job.runAt.getTime() <= now.getTime();
+}
+
+/* -------------------------------------------------------------------------
  * Job leases and worker health
  *
  * claimNextJob stamps lockedAt/lockedBy when it takes a job, but until now

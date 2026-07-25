@@ -150,6 +150,7 @@ export default async function JobsPage({
               <th>Job</th>
               <th>Status</th>
               <th>Attempts</th>
+              <th>Next Attempt</th>
               <th>Error</th>
               <th>Links</th>
               <th>Created</th>
@@ -164,6 +165,16 @@ export default async function JobsPage({
                 </td>
                 <td><Badge tone={jobStatusTone(job.status)}>{labelMaps.jobStatus[job.status]}</Badge></td>
                 <td>{job.attempts}/{job.maxAttempts}</td>
+                <td>
+                  {job.runAt > new Date() ? (
+                    <>
+                      <Badge tone="neutral">Scheduled</Badge>
+                      <div className="muted">{formatDateTime(job.runAt)}</div>
+                    </>
+                  ) : (
+                    <span className="muted">Due now</span>
+                  )}
+                </td>
                 <td>{job.errorMessage ?? <span className="muted">None</span>}</td>
                 <td>
                   {job.relatedTicket ? <a href={`/tickets/${job.relatedTicket.id}`}>Ticket</a> : <span className="muted">No ticket</span>}
