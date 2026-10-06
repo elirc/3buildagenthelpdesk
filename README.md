@@ -101,7 +101,11 @@ Use the switcher in the top bar or `/settings`.
 - `/agents` - Agent run history
 - `/agents/[id]` - Agent input, output, trace, confidence, recommendations
 - `/audit` - Audit event explorer
+- `/analytics` - Team and assignee analytics (Story F1)
+- `/knowledge` - Knowledge base with article suggestions (Story E3)
+- `/notifications` - Watcher notification inbox (Story A5)
 - `/settings` - Local active-user switcher
+- `/api/v1/tickets`, `/api/v1/incidents` - read-only REST API behind scoped API keys (Story F2)
 
 ## Architecture Summary
 
@@ -118,25 +122,35 @@ The repository is split by logical module:
 
 ## Tests
 
-Core tests live in `tests/` and cover:
-
-- Ticket status transitions
-- SLA calculations and SLA state
-- Ticket validation and tag normalization
-- Ticket summarization heuristics
-- Log anomaly scoring
-- Failed job investigation heuristics
+288 tests across 22 files in `tests/` (grown from 12 while shipping the
+20-story backlog — every PR passed CI). Coverage spans the original domain
+suites (ticket transitions, SLA, validation, summarization, anomaly scoring,
+job investigation) plus one suite per shipped story: saved views, bulk
+triage, canned replies, ticket links/merge, duplicate detection, SLA pause,
+business hours, first response, routing, job backoff/leases, dead letter,
+agent diff, analytics, API keys, log alerts, knowledge, notifications.
 
 ## Known Limitations
 
 - Authentication is intentionally simulated with a local active user cookie.
 - The app expects PostgreSQL; no SQLite fallback is included.
 - Agents are deterministic heuristic systems, not LLM calls.
-- Server actions provide the main mutation path; there is no separate public REST API.
+- Server actions are the mutation path; the REST API under `/api/v1` (Story F2) is read-only.
 - Realtime log streaming is not implemented yet.
 
 ## Recommended Learning Path
 
-Start with `docs/02-codebase-reading-guide.md`, then trace a ticket from `/tickets/new` through `apps/web/lib/actions.ts`, `packages/domain`, and `packages/db/prisma/schema.prisma`. After that, inspect `packages/agents` and run the tests while changing a heuristic.
+Read `fabledocs/01-how-this-app-works.md` first — it is the most recent
+full pass over the code, and where it disagrees with `docs/`, it wins.
+Then trace a ticket from `/tickets/new` through `apps/web/lib/actions.ts`,
+`packages/domain`, and `packages/db/prisma/schema.prisma`; inspect
+`packages/agents` and run the tests while changing a heuristic.
 
-For sprint-style feature practice, follow `docs/sprint-roadmap.md`. It breaks the next set of product improvements into five training sprints with user stories, technical designs, implementation playbooks, and review guides.
+The best study material in this repo is the PR history: the 20 backlog
+stories (`fabledocs/02-feature-backlog-user-stories.md`) were merged as
+PRs #3–#22, each with acceptance criteria, verification notes, and a risks
+section. Read a story, design it yourself, then read its PR.
+
+For fresh feature practice, `docs/sprint-roadmap.md` holds five unbuilt
+training sprints — but read its status note first, because several sprint
+stories overlap with work the backlog has since shipped.

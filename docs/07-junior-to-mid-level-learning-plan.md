@@ -4,6 +4,12 @@
 
 Use this project to practice reading, modifying, debugging, and explaining a production-style TypeScript codebase.
 
+> Written before the 20-story backlog shipped (PRs #3–#22). The plan still
+> works, but the codebase is now much richer than the days below assume —
+> after Day 14, the natural continuation is re-implementing a shipped story
+> blind and diffing your design against its PR (see the Recommended Learning
+> Path in the root README).
+
 ## 14-Day Plan
 
 Day 1: Read `README.md`, architecture overview, and Prisma schema. Draw the entity relationships.
@@ -44,12 +50,28 @@ Day 14: Prepare an architecture review: explain modules, tradeoffs, limitations,
 
 ## Small Code Modification Tasks
 
-- Add a new ticket category.
-- Add a new job type.
-- Add a new dashboard metric.
-- Add an incident status filter.
-- Add an audit metadata field.
-- Add a new agent limitation.
+Each task names where to start and how to know it worked:
+
+- **Add a new ticket category.** `TICKET_CATEGORIES` in
+  `packages/shared/src/index.ts:18` is the single source (the type and the
+  labels map at `:105` derive from it). **Check**: the new category appears
+  in the new-ticket form and `npm run typecheck` passes — if you missed the
+  labels map, the compiler tells you.
+- **Add a new job type.** Same pattern: `JOB_TYPES` at
+  `packages/shared/src/index.ts:41`. **Check**: seed a job with the new
+  type and it renders on `/jobs` with a label, not a raw enum string.
+- **Add a new dashboard metric.** Follow how `apps/web/app/page.tsx` loads
+  its queries in parallel. **Check**: the metric changes when you mutate
+  the underlying data via the UI.
+- **Add an incident status filter.** Mirror the ticket queue's filter
+  pattern. **Check**: the URL carries the filter state and a page reload
+  preserves it.
+- **Add an audit metadata field.** Pick one mutation in
+  `apps/web/lib/actions.ts` that writes an audit event. **Check**: the new
+  field shows in `/audit` for fresh events and old events still render.
+- **Add a new agent limitation.** `packages/agents` — each agent declares
+  limitations in its output. **Check**: the limitation appears on
+  `/agents/[id]` for a fresh run.
 
 ## Debugging Exercises
 

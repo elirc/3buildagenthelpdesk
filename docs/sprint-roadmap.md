@@ -1,5 +1,17 @@
 # Five-Sprint Feature Roadmap
 
+> **Status (2026-10-06): none of these five sprints has been implemented —
+> they remain available as training work. But the separate 20-story backlog
+> in `fabledocs/02-feature-backlog-user-stories.md` has shipped (PRs #3–#22),
+> and it built some of what these sprints describe. Confirmed overlaps:
+> Sprint One's queue/triage improvements partially exist (A1 pagination and
+> sorting, A3 bulk triage, A4 canned replies); Sprint Three's Story 3.3
+> analytics dashboard exists (`/analytics`, Story F1) and escalation routing
+> exists (Story C3); Sprint Five's CI landed in PR #1 and queue pagination in
+> A1. Before starting any sprint story, check the status table in
+> `fabledocs/README.md` and search the PR list for the feature — building a
+> duplicate teaches less than extending the shipped version.**
+
 This roadmap turns the Agentic Help Desk app into a realistic training project for a junior software engineer. The point is not just to add features. The point is to practice how real product work moves from user stories to design, implementation, tests, review, release, and retrospective learning.
 
 The app is already a TypeScript modular monolith with Next.js App Router pages, Prisma persistence, domain packages, deterministic agents, audit events, and Vitest coverage. The sprint docs below build on those existing boundaries instead of inventing a new architecture.

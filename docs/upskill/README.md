@@ -2,6 +2,16 @@
 
 This curriculum turns the Agentic Help Desk repository into a training lab for a junior engineer growing toward mid-level and senior judgment. It is for learners who want to read real code, make safe changes, explain tradeoffs, and practice interview-ready engineering thinking using this exact codebase.
 
+> **Line-number warning (2026-10-06).** Every `file:line` anchor in this
+> curriculum was written against the pre-backlog tree. Since then the
+> 20-story backlog shipped (PRs #3–#22) and the anchored files grew —
+> `apps/web/lib/actions.ts` alone went from ~530 to ~2,350 lines — so the
+> line numbers below are landmarks, not coordinates. The symbol names are
+> still correct: search for the named function or schema in your editor
+> instead of jumping to the line. Where this curriculum disagrees with
+> `fabledocs/01-how-this-app-works.md`, trust fabledocs — it was written
+> against the current tree.
+
 ## Repo Identity
 
 This is a TypeScript modular monolith for an internal help desk and incident intelligence platform. The web app lives in `apps/web`, and shared packages live in `packages/*` through npm workspaces (`package.json:6-9`). The product surface includes tickets, incidents, structured logs, background jobs, audit events, and deterministic mock agents. Persistence is modeled in Prisma (`packages/db/prisma/schema.prisma:111-281`). Mutations happen mostly through Next.js server actions (`apps/web/lib/actions.ts:41-530`). Business invariants live in `packages/domain`, especially ticket transitions and SLA rules (`packages/domain/src/tickets.ts:34-89`). Agents are local heuristic systems, not real LLM calls (`packages/agents/src/types.ts:16-39`).
